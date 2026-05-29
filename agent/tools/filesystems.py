@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import time
 from pathlib import Path
 import difflib
@@ -201,38 +202,52 @@ def run_search_text(
     if limit <= 0:
         return "Error: ValidationError: limit must be greater than 0"
 
-    if not any(mark in pattern for mark in "*?[]") and not Path(pattern).suffix:
-        pattern = "**/*"
-
     try:
         root = _workspace_root(workspace)
-        pattern = _validate_glob_pattern(pattern)
-        deadline = time.monotonic() + timeout_seconds
-        results = []
 
-        for file_path in root.glob(pattern):
-            if time.monotonic() > deadline:
-                results.append(f"... search timeout after {timeout_seconds:.1f}s")
-                break
+        rg_args = [
+            "--line-number",
+            "--ignore-case",
+            "--max-count", str(limit),
+            "--glob", pattern if ("*" in pattern or "?" in pattern) else f"*{pattern}",
+        ]
+        rg_args.append(query)
+
+        try:
+            result = subprocess.run(
+                ["rg"] + rg_args,
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except FileNotFoundError:
+            return "Error: rg (ripgrep) is not installed"
+        except subprocess.TimeoutExpired:
+            return f"Error: search timeout after {timeout_seconds:.1f}s"
+
+        if result.returncode > 1:
+            return f"Error: rg failed with exit code {result.returncode}"
+
+        output = result.stdout.strip()
+        if not output:
+            return "(no matches)"
+
+        results = []
+        for raw_line in output.splitlines():
+            if not raw_line.strip():
+                continue
+            parts = raw_line.split(":", 2)
+            if len(parts) >= 3:
+                rel_path = parts[0]
+                line_no = parts[1]
+                content = parts[2].strip()
+                if _is_skipped(root / rel_path, root):
+                    continue
+                results.append(f"{rel_path}:{line_no}: {content}")
             if len(results) >= limit:
                 results.append(f"... result limit reached ({limit})")
                 break
-            if not file_path.is_file() or _is_skipped(file_path, root):
-                continue
-
-            try:
-                lines = file_path.read_text(encoding="utf-8").splitlines()
-            except UnicodeDecodeError:
-                continue
-            except OSError:
-                continue
-
-            for line_no, line in enumerate(lines, start=1):
-                if query.lower() in line.lower():
-                    rel_path = file_path.relative_to(root)
-                    results.append(f"{rel_path}:{line_no}: {line.strip()}")
-                    if len(results) >= limit:
-                        break
 
         return "\n".join(results) if results else "(no matches)"
     except ValueError as e:
