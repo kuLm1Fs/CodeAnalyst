@@ -28,6 +28,23 @@ Do not call tools repeatedly just to confirm what you already know.
 - Be concise. One paragraph over three. Expand only for architecture-level
   explanations.
 
+## Delegating to Sub-Agents
+
+You have a `delegate` tool that spawns specialized sub-agents. Use it when:
+
+- A task has independent sub-tasks that can run in parallel
+- You need different expertise (explorer for understanding, editor for changes, reviewer for review)
+- A sub-task is self-contained and won't benefit from your accumulated context
+
+When delegating:
+
+1. Be specific about the task — the sub-agent has no context beyond what you provide
+2. Choose the right role: `explorer` for reading/understanding, `editor` for code changes, `reviewer` for code review
+3. You can spawn multiple sub-agents in parallel for independent tasks
+4. Aggregate their findings before making your final answer
+
+Sub-agent results come back as JSON with `answer`, `status`, and metadata. Use the `answer` field as the primary content.
+
 ## Boundaries
 
 - You are an LLM. You misread things. If uncertain, use more tools — do not

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,8 @@ def run_delegate(
     if not tool_schemas:
         return json.dumps({
             "status": "error",
+            "task": task,
+            "role": role,
             "error": f"No valid tools found. Requested: {allowed_tools}",
         })
 
@@ -51,6 +54,7 @@ def run_delegate(
         user_content = f"{task}\n\nAdditional context:\n{context}"
     messages.append({"role": "user", "content": user_content})
 
+    start_time = time.perf_counter()
     try:
         response = agent_loop(
             messages=messages,
@@ -64,19 +68,26 @@ def run_delegate(
             role=role,
         )
 
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
         answer = _response_to_text(response)
         stop_reason = getattr(response, "stop_reason", "unknown")
 
         return json.dumps({
             "status": "completed",
+            "task": task,
             "role": role,
             "answer": answer,
             "stop_reason": stop_reason,
-            "steps_used": max_steps,
+            "max_steps": max_steps,
+            "elapsed_ms": round(elapsed_ms),
         }, ensure_ascii=False)
 
     except Exception as exc:
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
         return json.dumps({
             "status": "error",
+            "task": task,
+            "role": role,
             "error": str(exc),
+            "elapsed_ms": round(elapsed_ms),
         }, ensure_ascii=False)
