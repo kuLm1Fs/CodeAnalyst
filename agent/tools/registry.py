@@ -197,6 +197,44 @@ for schema in BUILTIN_SCHEMAS:
             handler=handler,
         )
 
+def _delegate_handler(**kwargs: Any) -> str:
+    from agent.tools.delegate import run_delegate
+    return run_delegate(**kwargs)
+
+
+registry.register(
+    name="delegate",
+    description=(
+        "Delegate a sub-task to a specialized sub-agent. "
+        "The sub-agent runs in the same workspace with a subset of tools. "
+        "Returns a JSON result with the sub-agent's answer."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "The task description for the sub-agent",
+            },
+            "tools": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Tool names the sub-agent can use. Default: all read-only tools",
+            },
+            "max_steps": {
+                "type": "integer",
+                "description": "Max steps for the sub-agent. Default: 6",
+            },
+            "context": {
+                "type": "string",
+                "description": "Additional context to pass to the sub-agent",
+            },
+        },
+        "required": ["task"],
+    },
+    handler=_delegate_handler,
+)
+
 TOOLS = registry.get_schemas()
 
 
