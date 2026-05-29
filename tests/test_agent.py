@@ -37,4 +37,36 @@ def test_agent_run_passes_session_id_to_agent_loop(tmp_path: Path) -> None:
         skills_root=None,
         trace_enabled=False,
         trace_payload_limit=2000,
+        role="main",
+        prompt_override=None,
     )
+
+
+def test_agent_run_with_role(tmp_path: Path) -> None:
+    config = AgentConfig(
+        workspace=tmp_path,
+        role="explorer",
+    )
+    agent = Agent(config)
+    messages = [{"role": "user", "content": "hello"}]
+
+    with patch("agent.runtime.agent.agent.agent_loop", return_value="ok") as mock_loop:
+        agent.run(messages)
+
+    call_kwargs = mock_loop.call_args[1]
+    assert call_kwargs["role"] == "explorer"
+
+
+def test_agent_run_with_prompt_override(tmp_path: Path) -> None:
+    config = AgentConfig(
+        workspace=tmp_path,
+        prompt_override="Custom prompt",
+    )
+    agent = Agent(config)
+    messages = [{"role": "user", "content": "hello"}]
+
+    with patch("agent.runtime.agent.agent.agent_loop", return_value="ok") as mock_loop:
+        agent.run(messages)
+
+    call_kwargs = mock_loop.call_args[1]
+    assert call_kwargs["prompt_override"] == "Custom prompt"

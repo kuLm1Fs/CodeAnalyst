@@ -74,10 +74,23 @@ def emit_hook(
 
 BASE_PROMPT_PATH = ROOT_DIR / "prompts" / "system.md"
 
+ROLE_PROMPT_FILES = {
+    "main": "system.md",
+    "explorer": "subagent-explorer.md",
+    "editor": "subagent-editor.md",
+    "reviewer": "subagent-reviewer.md",
+}
 
-def _load_base_prompt() -> str:
+
+def _load_base_prompt(role: str = "main", prompt_override: str | None = None) -> str:
+    if prompt_override:
+        return prompt_override
+
+    prompt_file = ROLE_PROMPT_FILES.get(role, "system.md")
+    prompt_path = ROOT_DIR / "prompts" / prompt_file
+
     try:
-        return BASE_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        return prompt_path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
 
@@ -183,6 +196,8 @@ def _prepare_loop(
     skills_root: Path | str | None,
     trace_enabled: bool,
     trace_payload_limit: int,
+    role: str = "main",
+    prompt_override: str | None = None,
 ) -> tuple[object, str, HookManager, SessionRollback, list, str]:
     llm_client = llm_client or get_default_client()
     session_id = session_id or make_session_id()
@@ -199,7 +214,7 @@ def _prepare_loop(
         messages=incoming_messages,
         skills_root=skills_root
     )
-    base_prompt = _load_base_prompt()
+    base_prompt = _load_base_prompt(role=role, prompt_override=prompt_override)
     if base_prompt and skill_prompt:
         system_prompt = f"{base_prompt}\n\n{skill_prompt}"
     else:
@@ -255,6 +270,8 @@ async def async_agent_loop(
         trace_enabled: bool = False,
         trace_payload_limit: int = 2000,
         tool_filter: set[str] | None = None,
+        role: str = "main",
+        prompt_override: str | None = None,
 ) -> Any:
     llm_client, session_id, hook_manager, rollback, messages, system_prompt = _prepare_loop(
         messages,
@@ -266,6 +283,8 @@ async def async_agent_loop(
         skills_root=skills_root,
         trace_enabled=trace_enabled,
         trace_payload_limit=trace_payload_limit,
+        role=role,
+        prompt_override=prompt_override,
     )
 
     available_tools = TOOLS
@@ -601,6 +620,8 @@ def agent_loop(
         trace_enabled: bool = False,
         trace_payload_limit: int = 2000,
         tool_filter: set[str] | None = None,
+        role: str = "main",
+        prompt_override: str | None = None,
 ) -> Any:
     try:
         loop = asyncio.get_running_loop()
@@ -620,6 +641,8 @@ def agent_loop(
         trace_enabled=trace_enabled,
         trace_payload_limit=trace_payload_limit,
         tool_filter=tool_filter,
+        role=role,
+        prompt_override=prompt_override,
     )
 
     if loop and loop.is_running():

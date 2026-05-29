@@ -7,6 +7,8 @@ from typing import Any
 
 READONLY_TOOLS = {"read_file", "glob", "search_text", "file_outline", "code_map", "symbol_lookup"}
 
+VALID_ROLES = {"explorer", "editor", "reviewer"}
+
 
 def _response_to_text(response: Any) -> str:
     if isinstance(response, list):
@@ -24,12 +26,16 @@ def run_delegate(
     tools: list[str] | None = None,
     max_steps: int = 6,
     context: str = "",
+    role: str = "explorer",
     workspace: str | Path | None = None,
 ) -> str:
     from agent.runtime.loop import agent_loop
     from agent.tools.registry import registry
 
     workspace = Path(workspace) if workspace else Path.cwd()
+
+    if role not in VALID_ROLES:
+        role = "explorer"
 
     allowed_tools = list(tools or READONLY_TOOLS)
     tool_schemas = registry.get_schemas(allowed_tools)
@@ -55,6 +61,7 @@ def run_delegate(
             memory_store=None,
             skills_root=None,
             trace_enabled=False,
+            role=role,
         )
 
         answer = _response_to_text(response)
@@ -62,6 +69,7 @@ def run_delegate(
 
         return json.dumps({
             "status": "completed",
+            "role": role,
             "answer": answer,
             "stop_reason": stop_reason,
             "steps_used": max_steps,

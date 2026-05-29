@@ -229,6 +229,11 @@ registry.register(
                 "type": "string",
                 "description": "Additional context to pass to the sub-agent",
             },
+            "role": {
+                "type": "string",
+                "enum": ["explorer", "editor", "reviewer"],
+                "description": "Role of the sub-agent. Default: explorer",
+            },
         },
         "required": ["task"],
     },

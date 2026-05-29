@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.runtime.loop import agent_loop, async_agent_loop
 from agent.trace.trace import make_session_id
 from agent.runtime.hooks import Hook
 from agent.memory.store import MemoryStore
+
+ROLE_PROMPT_FILES = {
+    "main": "system.md",
+    "explorer": "subagent-explorer.md",
+    "editor": "subagent-editor.md",
+    "reviewer": "subagent-reviewer.md",
+}
+
 
 @dataclass(frozen=True)
 class AgentConfig:
@@ -20,6 +28,9 @@ class AgentConfig:
     skills_root: Path | str | None = None
     trace_enabled: bool = False
     trace_payload_limit: int = 2000
+    role: str = "main"
+    prompt_override: str | None = None
+
 
 class Agent:
     def __init__(self, config: AgentConfig | None = None) -> None:
@@ -40,6 +51,8 @@ class Agent:
             skills_root=self.config.skills_root,
             trace_enabled=self.config.trace_enabled,
             trace_payload_limit=self.config.trace_payload_limit,
+            role=self.config.role,
+            prompt_override=self.config.prompt_override,
         )
 
     async def async_run(self, messages: list[dict]) -> object:
@@ -56,4 +69,6 @@ class Agent:
             skills_root=self.config.skills_root,
             trace_enabled=self.config.trace_enabled,
             trace_payload_limit=self.config.trace_payload_limit,
+            role=self.config.role,
+            prompt_override=self.config.prompt_override,
         )
