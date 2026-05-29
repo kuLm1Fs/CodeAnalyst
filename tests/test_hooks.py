@@ -1,8 +1,9 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 from agent.runtime.agent.agent import Agent, AgentConfig
-from agent.runtime.hooks import HookManager
+from agent.runtime.hooks import HookManager, SubAgentEventBus, SubAgentEvent
 from agent.runtime.loop import agent_loop
 from agent.trace.trace import AgentTrace, TraceHook
 
@@ -202,3 +203,97 @@ def test_agent_config_passes_hooks_to_loop(tmp_path: Path) -> None:
 
     assert "session.start" in events
     assert "session.end" in events
+
+
+class TestAsyncHooks:
+    def test_sync_hook_still_works(self, tmp_path: Path) -> None:
+        events = []
+        manager = HookManager()
+
+        def sync_hook(context):
+            events.append(context.event)
+
+        manager.register(sync_hook)
+        manager.emit("test", {}, session_id="s1", workspace=str(tmp_path))
+
+        assert events == ["test"]
+
+    def test_async_hook_with_emit_async(self, tmp_path: Path) -> None:
+        events = []
+        manager = HookManager()
+
+        async def async_hook(context):
+            events.append(context.event)
+
+        manager.register(async_hook)
+
+        asyncio.run(manager.emit_async("test", {}, session_id="s1", workspace=str(tmp_path)))
+
+        assert events == ["test"]
+
+    def test_mixed_sync_async_hooks(self, tmp_path: Path) -> None:
+        events = []
+        manager = HookManager()
+
+        def sync_hook(context):
+            events.append(f"sync:{context.event}")
+
+        async def async_hook(context):
+            events.append(f"async:{context.event}")
+
+        manager.register(sync_hook)
+        manager.register(async_hook)
+
+        asyncio.run(manager.emit_async("test", {}, session_id="s1", workspace=str(tmp_path)))
+
+        assert "sync:test" in events
+        assert "async:test" in events
+
+
+class TestSubAgentEventBus:
+    def test_subscribe_and_emit(self) -> None:
+        bus = SubAgentEventBus()
+        queue = bus.subscribe("task-1")
+
+        event = SubAgentEvent(task_id="task-1", event_type="started", payload={})
+        bus.emit_sync(event)
+
+        assert not queue.empty()
+        received = queue.get_nowait()
+        assert received.event_type == "started"
+
+    def test_isolated_per_task(self) -> None:
+        bus = SubAgentEventBus()
+        queue1 = bus.subscribe("task-1")
+        queue2 = bus.subscribe("task-2")
+
+        event1 = SubAgentEvent(task_id="task-1", event_type="started", payload={})
+        event2 = SubAgentEvent(task_id="task-2", event_type="completed", payload={})
+        bus.emit_sync(event1)
+        bus.emit_sync(event2)
+
+        assert queue1.get_nowait().event_type == "started"
+        assert queue2.get_nowait().event_type == "completed"
+
+    def test_unsubscribe(self) -> None:
+        bus = SubAgentEventBus()
+        queue = bus.subscribe("task-1")
+        bus.unsubscribe("task-1", queue)
+
+        event = SubAgentEvent(task_id="task-1", event_type="started", payload={})
+        bus.emit_sync(event)
+
+        assert queue.empty()
+
+    def test_async_emit(self) -> None:
+        bus = SubAgentEventBus()
+        queue = bus.subscribe("task-1")
+
+        event = SubAgentEvent(task_id="task-1", event_type="started", payload={})
+
+        async def collect():
+            await bus.emit(event)
+            return await queue.get()
+
+        received = asyncio.run(collect())
+        assert received.event_type == "started"
