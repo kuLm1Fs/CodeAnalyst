@@ -10,9 +10,24 @@ WRITE_TOOLS = {"write_file", "edit_file", "safe_edit"}
 
 
 class SessionRollback:
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        scope: str = "session",
+        parent: SessionRollback | None = None,
+    ) -> None:
         self.workspace = workspace
+        self.scope = scope
+        self.parent = parent
         self._snapshots: dict[str, str | None] = {}
+
+    def create_sub_scope(self, scope_id: str) -> SessionRollback:
+        sub_scope = f"{self.scope}:{scope_id}"
+        return SessionRollback(
+            workspace=self.workspace,
+            scope=sub_scope,
+            parent=self,
+        )
 
     def snapshot(self, tool_name: str, tool_input: dict[str, Any]) -> None:
         if tool_name not in WRITE_TOOLS:
@@ -23,14 +38,19 @@ class SessionRollback:
         if not path_str:
             return
         full = (self.workspace / path_str).resolve()
-        if str(full) in self._snapshots:
+        full_str = str(full)
+        if full_str in self._snapshots:
             return
         if full.exists():
-            self._snapshots[str(full)] = full.read_text(encoding="utf-8")
+            self._snapshots[full_str] = full.read_text(encoding="utf-8")
         else:
-            self._snapshots[str(full)] = None
+            self._snapshots[full_str] = None
 
     def commit(self) -> None:
+        if self.parent:
+            for path_str, original in self._snapshots.items():
+                if path_str not in self.parent._snapshots:
+                    self.parent._snapshots[path_str] = original
         self._snapshots.clear()
 
     def rollback(self) -> list[str]:
@@ -52,6 +72,10 @@ class SessionRollback:
                     restored.append(f"failed to restore {path_str}")
         self._snapshots.clear()
         return restored
+
+    @property
+    def has_changes(self) -> bool:
+        return len(self._snapshots) > 0
 
 
 def create_rollback_hook(rollback: SessionRollback) -> Hook:
