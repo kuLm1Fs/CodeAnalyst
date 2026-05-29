@@ -14,6 +14,14 @@ class MemoryStore:
     def session_path(self, session_id: str) -> Path:
         return self.session_dir / f"{session_id}.jsonl"
 
+    def _task_dir(self, session_id: str) -> Path:
+        task_dir = self.session_dir / session_id / "tasks"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        return task_dir
+
+    def _task_path(self, session_id: str, task_id: str) -> Path:
+        return self._task_dir(session_id) / f"{task_id}.jsonl"
+
     def append_message(self, session_id: str, message: dict[str, Any]) -> None:
         with self.session_path(session_id).open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(message, ensure_ascii=False) + "\n")
@@ -22,15 +30,56 @@ class MemoryStore:
         path = self.session_path(session_id)
         if not path.exists():
             return []
-        
+
         messages = []
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 messages.append(json.loads(line))
         return messages
-    
+
+    def append_task_message(
+        self, session_id: str, task_id: str, message: dict[str, Any]
+    ) -> None:
+        path = self._task_path(session_id, task_id)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(message, ensure_ascii=False) + "\n")
+
+    def load_task_messages(
+        self, session_id: str, task_id: str
+    ) -> list[dict[str, Any]]:
+        path = self._task_path(session_id, task_id)
+        if not path.exists():
+            return []
+
+        messages = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                messages.append(json.loads(line))
+        return messages
+
+    def list_tasks(self, session_id: str) -> list[dict[str, Any]]:
+        task_dir = self._task_dir(session_id)
+        tasks: list[dict[str, Any]] = []
+
+        for path in sorted(task_dir.glob("*.jsonl")):
+            messages = self._load_path(path)
+            updated_at = datetime.fromtimestamp(
+                path.stat().st_mtime,
+                tz=timezone.utc,
+            ).isoformat().replace("+00:00", "Z")
+            tasks.append({
+                "task_id": path.stem,
+                "message_count": len(messages),
+                "updated_at": updated_at,
+            })
+
+        return tasks
+
     def clear_session(self, session_id: str) -> None:
         self.session_path(session_id).unlink(missing_ok=True)
+
+    def clear_task(self, session_id: str, task_id: str) -> None:
+        self._task_path(session_id, task_id).unlink(missing_ok=True)
 
     def list_sessions(self) -> list[dict[str, Any]]:
         sessions: list[dict[str, Any]] = []
