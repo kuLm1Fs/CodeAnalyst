@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from agent.tools.code_analysis import run_code_map, run_file_outline, run_symbol_lookup
-from agent.tools.registry import execute_tool
+from agent.tools.registry import ToolResult, execute_tool
 
 
 def write_sample(path: Path) -> None:
@@ -91,7 +91,8 @@ def test_symbol_lookup_returns_no_matches_for_missing(tmp_path: Path) -> None:
 def test_registry_exposes_code_analysis_tools(tmp_path: Path) -> None:
     write_sample(tmp_path / "sample.py")
 
-    output = execute_tool("file_outline", {"path": "sample.py"}, workspace=tmp_path)
+    result = execute_tool("file_outline", {"path": "sample.py"}, workspace=tmp_path)
 
-    assert "sample.py" in output
-    assert "class Store" in output
+    assert isinstance(result, ToolResult)
+    assert "sample.py" in result.content
+    assert "class Store" in result.content

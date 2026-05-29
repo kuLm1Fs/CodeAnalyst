@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 from typing import Any
-from agent.tools.registry import TOOLS, execute_tool
+from agent.tools.registry import TOOLS, ToolResult, execute_tool
 from agent.trace.trace import make_session_id, AgentTrace, TraceHook
 from agent.runtime.hooks import Hook, HookManager
 from agent.memory.store import MemoryStore
@@ -480,11 +480,14 @@ async def async_agent_loop(
                 continue
             tool_start = time.perf_counter()
             success = True
+            tool_result: ToolResult | None = None
             output = ""
             try:
-                output = await asyncio.to_thread(
+                tool_result = await asyncio.to_thread(
                     execute_tool, block.name, block.input, workspace=workspace
                 )
+                output = tool_result.content
+                success = not output.startswith("Error:")
             except Exception as exc:
                 output = str(exc)
                 success = False
@@ -502,12 +505,27 @@ async def async_agent_loop(
                     "output": output,
                     "success": success,
                     "duration_ms": tool_elapsed,
+                    "terminate": tool_result.terminate if tool_result else False,
                 },
                 session_id=session_id,
                 workspace=workspace,
             )
             print(output[:200])
             results.append({"type": "tool_result", "tool_use_id": block.id, "content": output[:10000]})
+
+            if tool_result and tool_result.terminate:
+                print(f"[terminate] {block.name} signaled termination")
+                emit_hook(
+                    hook_manager,
+                    "session.end",
+                    {
+                        "final_output": output,
+                        "stop_reason": "tool_terminated",
+                    },
+                    session_id=session_id,
+                    workspace=workspace,
+                )
+                return response
 
         if delegate_blocks:
             async def run_delegate_block(block):
@@ -524,11 +542,14 @@ async def async_agent_loop(
                 )
                 tool_start = time.perf_counter()
                 success = True
+                tool_result: ToolResult | None = None
                 output = ""
                 try:
-                    output = await asyncio.to_thread(
+                    tool_result = await asyncio.to_thread(
                         execute_tool, "delegate", block.input, workspace=workspace
                     )
+                    output = tool_result.content
+                    success = not output.startswith("Error:")
                 except Exception as exc:
                     output = str(exc)
                     success = False
@@ -544,6 +565,7 @@ async def async_agent_loop(
                         "output": output,
                         "success": success,
                         "duration_ms": tool_elapsed,
+                        "terminate": tool_result.terminate if tool_result else False,
                     },
                     session_id=session_id,
                     workspace=workspace,

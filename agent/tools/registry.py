@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,6 +17,20 @@ from agent.tools.code_analysis import (
     run_file_outline,
     run_symbol_lookup,
 )
+
+
+@dataclass
+class ToolResult:
+    """Structured tool result with optional terminate signal."""
+    content: str
+    terminate: bool = False
+
+    @classmethod
+    def from_value(cls, value: str | ToolResult) -> ToolResult:
+        """Wrap a string or pass through a ToolResult."""
+        if isinstance(value, cls):
+            return value
+        return cls(content=str(value))
 
 BUILTIN_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -133,14 +148,14 @@ BUILTIN_HANDLERS: dict[str, Callable[..., str]] = {
 class ToolRegistry:
     def __init__(self) -> None:
         self._schemas: dict[str, dict[str, Any]] = {}
-        self._handlers: dict[str, Callable[..., str]] = {}
+        self._handlers: dict[str, Callable[..., str | ToolResult]] = {}
 
     def register(
         self,
         name: str,
         description: str,
         input_schema: dict[str, Any],
-        handler: Callable[..., str],
+        handler: Callable[..., str | ToolResult],
     ) -> None:
         self._schemas[name] = {
             "name": name,
@@ -169,19 +184,20 @@ class ToolRegistry:
         name: str,
         tool_input: dict[str, Any],
         workspace: Path | str | None = None,
-    ) -> str:
+    ) -> ToolResult:
         handler = self._handlers.get(name)
         if handler is None:
-            return f"Error: Unknown tool: {name}"
+            return ToolResult(content=f"Error: Unknown tool: {name}")
         if not isinstance(tool_input, dict):
-            return f"Error: ValidationError: tool input for {name} must be an object"
+            return ToolResult(content=f"Error: ValidationError: tool input for {name} must be an object")
 
         try:
-            return handler(**tool_input, workspace=workspace)
+            result = handler(**tool_input, workspace=workspace)
+            return ToolResult.from_value(result)
         except TypeError as e:
-            return f"Error: ValidationError: invalid arguments for {name}: {e}"
+            return ToolResult(content=f"Error: ValidationError: invalid arguments for {name}: {e}")
         except Exception as e:
-            return f"Error: tool {name} failed: {e}"
+            return ToolResult(content=f"Error: tool {name} failed: {e}")
 
 
 registry = ToolRegistry()
@@ -247,5 +263,5 @@ def execute_tool(
     name: str,
     tool_input: dict[str, Any],
     workspace: Path | str | None = None,
-) -> str:
+) -> ToolResult:
     return registry.execute(name, tool_input, workspace=workspace)

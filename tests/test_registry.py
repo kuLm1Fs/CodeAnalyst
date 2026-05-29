@@ -3,6 +3,7 @@ from typing import Any
 
 from agent.tools.registry import (
     ToolRegistry,
+    ToolResult,
     execute_tool,
     registry,
     TOOLS,
@@ -12,19 +13,23 @@ from agent.tools.registry import (
 def test_execute_tool_rejects_unknown_tool(tmp_path: Path) -> None:
     result = execute_tool("missing_tool", {}, workspace=tmp_path)
 
-    assert result == "Error: Unknown tool: missing_tool"
+    assert isinstance(result, ToolResult)
+    assert result.content == "Error: Unknown tool: missing_tool"
+    assert result.terminate is False
 
 
 def test_execute_tool_rejects_non_object_input(tmp_path: Path) -> None:
     result = execute_tool("read_file", "README.md", workspace=tmp_path)  # type: ignore[arg-type]
 
-    assert result == "Error: ValidationError: tool input for read_file must be an object"
+    assert isinstance(result, ToolResult)
+    assert result.content == "Error: ValidationError: tool input for read_file must be an object"
 
 
 def test_execute_tool_reports_invalid_arguments(tmp_path: Path) -> None:
     result = execute_tool("read_file", {"unexpected": "value"}, workspace=tmp_path)
 
-    assert result.startswith("Error: ValidationError: invalid arguments for read_file:")
+    assert isinstance(result, ToolResult)
+    assert result.content.startswith("Error: ValidationError: invalid arguments for read_file:")
 
 
 class TestToolRegistry:
@@ -129,12 +134,15 @@ class TestToolRegistry:
             handler=echo,
         )
         result = reg.execute("echo", {"text": "hello"}, workspace=tmp_path)
-        assert result == "hello"
+        assert isinstance(result, ToolResult)
+        assert result.content == "hello"
+        assert result.terminate is False
 
     def test_execute_unknown_tool(self, tmp_path: Path) -> None:
         reg = ToolRegistry()
         result = reg.execute("nope", {}, workspace=tmp_path)
-        assert result == "Error: Unknown tool: nope"
+        assert isinstance(result, ToolResult)
+        assert result.content == "Error: Unknown tool: nope"
 
     def test_execute_non_dict_input(self, tmp_path: Path) -> None:
         reg = ToolRegistry()
@@ -145,7 +153,8 @@ class TestToolRegistry:
             handler=lambda workspace=None: "ok",
         )
         result = reg.execute("t", "bad", workspace=tmp_path)  # type: ignore[arg-type]
-        assert "ValidationError" in result
+        assert isinstance(result, ToolResult)
+        assert "ValidationError" in result.content
 
     def test_execute_handler_exception(self, tmp_path: Path) -> None:
         reg = ToolRegistry()
@@ -160,7 +169,8 @@ class TestToolRegistry:
             handler=broken,
         )
         result = reg.execute("broken", {}, workspace=tmp_path)
-        assert "Error: tool broken failed: boom" in result
+        assert isinstance(result, ToolResult)
+        assert "Error: tool broken failed: boom" in result.content
 
 
 class TestBackwardCompatibility:
@@ -185,7 +195,8 @@ class TestBackwardCompatibility:
     def test_execute_tool_wrapper_works(self, tmp_path: Path) -> None:
         (tmp_path / "test.txt").write_text("hello")
         result = execute_tool("read_file", {"path": "test.txt"}, workspace=tmp_path)
-        assert "hello" in result
+        assert isinstance(result, ToolResult)
+        assert "hello" in result.content
 
     def test_tools_matches_registry_schemas(self) -> None:
         reg_schemas = registry.get_schemas()
