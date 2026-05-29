@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.runtime.loop import agent_loop
+from agent.runtime.loop import agent_loop, async_agent_loop
 from agent.trace.trace import make_session_id
 from agent.runtime.hooks import Hook
 from agent.memory.store import MemoryStore
@@ -29,6 +29,22 @@ class Agent:
     def run(self, messages: list[dict]) -> object:
 
         return agent_loop(
+            messages=messages,
+            max_tokens=self.config.max_tokens,
+            max_steps=self.config.max_steps,
+            workspace=self.config.workspace,
+            session_id=self.session_id,
+            llm_client=self.config.llm_client,
+            hooks=self.config.hooks,
+            memory_store=self.config.memory_store,
+            skills_root=self.config.skills_root,
+            trace_enabled=self.config.trace_enabled,
+            trace_payload_limit=self.config.trace_payload_limit,
+        )
+
+    async def async_run(self, messages: list[dict]) -> object:
+
+        return await async_agent_loop(
             messages=messages,
             max_tokens=self.config.max_tokens,
             max_steps=self.config.max_steps,

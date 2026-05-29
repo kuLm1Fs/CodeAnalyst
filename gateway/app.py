@@ -150,8 +150,7 @@ async def run_chat(websocket: ServerConnection, message: dict[str, Any]) -> None
             )
         )
 
-        response = await asyncio.to_thread(
-            agent.run,
+        response = await agent.async_run(
             [{"role": "user", "content": prompt}],
         )
 

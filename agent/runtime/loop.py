@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Any
 from agent.tools.registry import TOOLS, execute_tool
@@ -170,18 +171,19 @@ def emit_skills_selected(
         workspace=workspace,
     )
 
-def agent_loop(
-        messages: list, 
-        max_tokens: int = 4096, 
-        workspace: Path = ROOT_DIR, 
-        max_steps: int = 12,
-        session_id: str | None = None,
-        llm_client=None,
-        hooks: list[Hook] | None = None,
-        memory_store: MemoryStore | None = None,
-        skills_root: Path | str | None = None,
-        trace_enabled: bool = False,
-        trace_payload_limit: int = 2000,) -> list[str]:
+
+def _prepare_loop(
+    messages: list,
+    *,
+    workspace: Path,
+    session_id: str,
+    llm_client: object | None,
+    hooks: list[Hook] | None,
+    memory_store: MemoryStore | None,
+    skills_root: Path | str | None,
+    trace_enabled: bool,
+    trace_payload_limit: int,
+) -> tuple[object, str, HookManager, SessionRollback, list, str]:
     llm_client = llm_client or get_default_client()
     session_id = session_id or make_session_id()
     active_hooks = list(hooks or [])
@@ -208,7 +210,6 @@ def agent_loop(
             messages, session_id=session_id, memory_store=memory_store,
         )
 
-    # start hook
     emit_hook(
         hook_manager,
         "session.start",
@@ -217,7 +218,6 @@ def agent_loop(
         workspace=workspace,
     )
 
-    # skill hook
     emit_skills_selected(
         hook_manager,
         selection,
@@ -238,6 +238,39 @@ def agent_loop(
                 session_id=session_id,
                 workspace=workspace,
             )
+
+    return llm_client, session_id, hook_manager, rollback, messages, system_prompt
+
+
+async def async_agent_loop(
+        messages: list,
+        max_tokens: int = 4096,
+        workspace: Path = ROOT_DIR,
+        max_steps: int = 12,
+        session_id: str | None = None,
+        llm_client=None,
+        hooks: list[Hook] | None = None,
+        memory_store: MemoryStore | None = None,
+        skills_root: Path | str | None = None,
+        trace_enabled: bool = False,
+        trace_payload_limit: int = 2000,
+        tool_filter: set[str] | None = None,
+) -> Any:
+    llm_client, session_id, hook_manager, rollback, messages, system_prompt = _prepare_loop(
+        messages,
+        workspace=workspace,
+        session_id=session_id,
+        llm_client=llm_client,
+        hooks=hooks,
+        memory_store=memory_store,
+        skills_root=skills_root,
+        trace_enabled=trace_enabled,
+        trace_payload_limit=trace_payload_limit,
+    )
+
+    available_tools = TOOLS
+    if tool_filter is not None:
+        available_tools = [t for t in TOOLS if t["name"] in tool_filter]
 
     last_response = None
     tool_cache: dict[str, str] = {}
@@ -264,7 +297,7 @@ def agent_loop(
                 "model": llm_client.default_model,
                 "max_tokens": max_tokens,
                 "message_count": len(messages),
-                "tool_names": [tool["name"] for tool in TOOLS],
+                "tool_names": [tool["name"] for tool in available_tools],
             },
             session_id=session_id,
             workspace=workspace,
@@ -276,7 +309,7 @@ def agent_loop(
             "messages": _truncate_messages(messages),
         }
         if not force_text_response:
-            request_kwargs["tools"] = TOOLS
+            request_kwargs["tools"] = available_tools
         else:
             force_text_response = False
         if system_prompt:
@@ -374,61 +407,40 @@ def agent_loop(
                 workspace=workspace,
             )
             return response
-        results = []
-        tool_use_count = 0
-        dedup_count = 0
+
+        delegate_blocks = []
+        other_blocks = []
         for block in response.content:
             if block.type == "tool_use":
-                tool_use_count += 1
-                emit_hook(
-                    hook_manager,
-                    "tool.before",
-                    {
-                        "tool_name": block.name,
-                        "tool_input": block.input,
-                        "tool_use_id": block.id,
-                    },
-                    session_id=session_id,
-                    workspace=workspace,
-                )
-                cache_key = f"{block.name}:{json.dumps(block.input, sort_keys=True)}"
-                cached = tool_cache.get(cache_key)
-                if cached is not None:
-                    dedup_count += 1
-                    tool_start = time.perf_counter()
-                    output = cached
-                    success = True
-                    tool_elapsed = (time.perf_counter() - tool_start) * 1000
-                    emit_hook(
-                        hook_manager,
-                        "tool.after",
-                        {
-                            "tool_name": block.name,
-                            "tool_input": block.input,
-                            "tool_use_id": block.id,
-                            "output": output,
-                            "success": success,
-                            "duration_ms": tool_elapsed,
-                            "dedup": True,
-                        },
-                        session_id=session_id,
-                        workspace=workspace,
-                    )
-                    print(f"[dedup] {block.name} → cached result ({len(output)} chars)")
-                    results.append({"type": "tool_result", "tool_use_id": block.id, "content": output[:10000]})
-                    continue
+                if block.name == "delegate":
+                    delegate_blocks.append(block)
+                else:
+                    other_blocks.append(block)
+
+        results = []
+        tool_use_count = len(delegate_blocks) + len(other_blocks)
+        dedup_count = 0
+
+        for block in other_blocks:
+            emit_hook(
+                hook_manager,
+                "tool.before",
+                {
+                    "tool_name": block.name,
+                    "tool_input": block.input,
+                    "tool_use_id": block.id,
+                },
+                session_id=session_id,
+                workspace=workspace,
+            )
+            cache_key = f"{block.name}:{json.dumps(block.input, sort_keys=True)}"
+            cached = tool_cache.get(cache_key)
+            if cached is not None:
+                dedup_count += 1
                 tool_start = time.perf_counter()
+                output = cached
                 success = True
-                output = ""
-                try:
-                    output = execute_tool(block.name, block.input, workspace=workspace)
-                except Exception as exc:
-                    output = str(exc)
-                    success = False
-                finally:
-                    tool_elapsed = (time.perf_counter() - tool_start) * 1000
-                if success:
-                    tool_cache[cache_key] = output
+                tool_elapsed = (time.perf_counter() - tool_start) * 1000
                 emit_hook(
                     hook_manager,
                     "tool.after",
@@ -439,12 +451,95 @@ def agent_loop(
                         "output": output,
                         "success": success,
                         "duration_ms": tool_elapsed,
+                        "dedup": True,
                     },
                     session_id=session_id,
                     workspace=workspace,
                 )
-                print(output[:200])
+                print(f"[dedup] {block.name} → cached result ({len(output)} chars)")
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": output[:10000]})
+                continue
+            tool_start = time.perf_counter()
+            success = True
+            output = ""
+            try:
+                output = await asyncio.to_thread(
+                    execute_tool, block.name, block.input, workspace=workspace
+                )
+            except Exception as exc:
+                output = str(exc)
+                success = False
+            finally:
+                tool_elapsed = (time.perf_counter() - tool_start) * 1000
+            if success:
+                tool_cache[cache_key] = output
+            emit_hook(
+                hook_manager,
+                "tool.after",
+                {
+                    "tool_name": block.name,
+                    "tool_input": block.input,
+                    "tool_use_id": block.id,
+                    "output": output,
+                    "success": success,
+                    "duration_ms": tool_elapsed,
+                },
+                session_id=session_id,
+                workspace=workspace,
+            )
+            print(output[:200])
+            results.append({"type": "tool_result", "tool_use_id": block.id, "content": output[:10000]})
+
+        if delegate_blocks:
+            async def run_delegate_block(block):
+                emit_hook(
+                    hook_manager,
+                    "tool.before",
+                    {
+                        "tool_name": "delegate",
+                        "tool_input": block.input,
+                        "tool_use_id": block.id,
+                    },
+                    session_id=session_id,
+                    workspace=workspace,
+                )
+                tool_start = time.perf_counter()
+                success = True
+                output = ""
+                try:
+                    output = await asyncio.to_thread(
+                        execute_tool, "delegate", block.input, workspace=workspace
+                    )
+                except Exception as exc:
+                    output = str(exc)
+                    success = False
+                finally:
+                    tool_elapsed = (time.perf_counter() - tool_start) * 1000
+                emit_hook(
+                    hook_manager,
+                    "tool.after",
+                    {
+                        "tool_name": "delegate",
+                        "tool_input": block.input,
+                        "tool_use_id": block.id,
+                        "output": output,
+                        "success": success,
+                        "duration_ms": tool_elapsed,
+                    },
+                    session_id=session_id,
+                    workspace=workspace,
+                )
+                print(f"[delegate] completed in {tool_elapsed:.0f}ms success={success}")
+                return {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": output[:10000],
+                }
+
+            delegate_results = await asyncio.gather(*[
+                run_delegate_block(block) for block in delegate_blocks
+            ])
+            results.extend(delegate_results)
 
         if tool_use_count > 0 and tool_use_count == dedup_count:
             consecutive_dedup += 1
@@ -491,3 +586,46 @@ def agent_loop(
         workspace=workspace,
     )
     return last_response or messages
+
+
+def agent_loop(
+        messages: list,
+        max_tokens: int = 4096,
+        workspace: Path = ROOT_DIR,
+        max_steps: int = 12,
+        session_id: str | None = None,
+        llm_client=None,
+        hooks: list[Hook] | None = None,
+        memory_store: MemoryStore | None = None,
+        skills_root: Path | str | None = None,
+        trace_enabled: bool = False,
+        trace_payload_limit: int = 2000,
+        tool_filter: set[str] | None = None,
+) -> Any:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    coro = async_agent_loop(
+        messages=messages,
+        max_tokens=max_tokens,
+        workspace=workspace,
+        max_steps=max_steps,
+        session_id=session_id,
+        llm_client=llm_client,
+        hooks=hooks,
+        memory_store=memory_store,
+        skills_root=skills_root,
+        trace_enabled=trace_enabled,
+        trace_payload_limit=trace_payload_limit,
+        tool_filter=tool_filter,
+    )
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result()
+    else:
+        return asyncio.run(coro)

@@ -1,8 +1,9 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
 from agent.memory import MemoryStore
-from agent.runtime.loop import agent_loop, response_to_text
+from agent.runtime.loop import agent_loop, async_agent_loop, response_to_text
 
 
 class AttrDict(dict):
@@ -164,3 +165,61 @@ def test_agent_loop_only_persists_text_not_thinking_blocks(tmp_path: Path) -> No
         "role": "assistant",
         "content": "visible answer",
     }
+
+
+def test_async_agent_loop_basic(tmp_path: Path) -> None:
+    fake_client = FakeLLMClient(
+        [response("end_turn", [text_block("async answer")])]
+    )
+
+    result = asyncio.run(async_agent_loop(
+        messages=[{"role": "user", "content": "hello"}],
+        workspace=tmp_path,
+        session_id="async-test",
+        llm_client=fake_client,
+    ))
+
+    assert response_to_text(result) == "async answer"
+
+
+def test_async_agent_loop_with_tool_call(tmp_path: Path) -> None:
+    (tmp_path / "test.txt").write_text("file content")
+    fake_client = FakeLLMClient(
+        [
+            response(
+                "tool_use",
+                [tool_use_block("t1", "read_file", {"path": "test.txt"})],
+            ),
+            response("end_turn", [text_block("read the file")]),
+        ]
+    )
+
+    result = asyncio.run(async_agent_loop(
+        messages=[{"role": "user", "content": "read test.txt"}],
+        workspace=tmp_path,
+        session_id="async-tool-test",
+        llm_client=fake_client,
+    ))
+
+    assert response_to_text(result) == "read the file"
+    assert len(fake_client.messages.calls) == 2
+
+
+def test_async_agent_loop_tool_filter(tmp_path: Path) -> None:
+    fake_client = FakeLLMClient(
+        [response("end_turn", [text_block("done")])]
+    )
+
+    result = asyncio.run(async_agent_loop(
+        messages=[{"role": "user", "content": "hello"}],
+        workspace=tmp_path,
+        session_id="filter-test",
+        llm_client=fake_client,
+        tool_filter={"read_file", "glob"},
+    ))
+
+    call_tools = fake_client.messages.calls[0]["tools"]
+    tool_names = {t["name"] for t in call_tools}
+    assert "read_file" in tool_names
+    assert "glob" in tool_names
+    assert "write_file" not in tool_names
