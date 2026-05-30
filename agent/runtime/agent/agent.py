@@ -19,7 +19,7 @@ ROLE_PROMPT_FILES = {
 @dataclass(frozen=True)
 class AgentConfig:
     workspace: Path
-    max_steps: int = 12
+    max_steps: int = 30
     max_tokens: int = 4096
     session_id: str | None = None
     llm_client: object | None = None
