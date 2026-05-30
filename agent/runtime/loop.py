@@ -261,7 +261,7 @@ async def async_agent_loop(
         messages: list,
         max_tokens: int = 4096,
         workspace: Path = ROOT_DIR,
-        max_steps: int = 30,
+        max_steps: int = 0,
         session_id: str | None = None,
         llm_client=None,
         hooks: list[Hook] | None = None,
@@ -295,7 +295,7 @@ async def async_agent_loop(
     tool_cache: dict[str, str] = {}
     consecutive_dedup = 0
     i = 0
-    while i < max_steps:
+    while max_steps <= 0 or i < max_steps:
         i += 1
         emit_hook(
             hook_manager,
@@ -609,7 +609,7 @@ def agent_loop(
         messages: list,
         max_tokens: int = 4096,
         workspace: Path = ROOT_DIR,
-        max_steps: int = 30,
+        max_steps: int = 0,
         session_id: str | None = None,
         llm_client=None,
         hooks: list[Hook] | None = None,

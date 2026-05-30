@@ -25,7 +25,7 @@ def _response_to_text(response: Any) -> str:
 def run_delegate(
     task: str,
     tools: list[str] | None = None,
-    max_steps: int = 15,
+    max_steps: int = 0,
     context: str = "",
     role: str = "explorer",
     workspace: str | Path | None = None,
