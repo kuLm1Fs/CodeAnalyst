@@ -294,9 +294,6 @@ async def async_agent_loop(
     last_response = None
     tool_cache: dict[str, str] = {}
     consecutive_dedup = 0
-    consecutive_tool_only = 0
-    MAX_CONSECUTIVE_TOOL_ONLY = 4
-    force_text_response = False
     i = 0
     while i < max_steps:
         i += 1
@@ -326,11 +323,8 @@ async def async_agent_loop(
             "model": llm_client.default_model,
             "max_tokens": max_tokens,
             "messages": _truncate_messages(messages),
+            "tools": available_tools,
         }
-        if not force_text_response:
-            request_kwargs["tools"] = available_tools
-        else:
-            force_text_response = False
         if system_prompt:
             request_kwargs["messages"] = [{"role": "system", "content": system_prompt}] + request_kwargs["messages"]
 
@@ -401,12 +395,6 @@ async def async_agent_loop(
         if reasoning:
             msg["reasoning_content"] = reasoning
         messages.append(msg)
-        if response.stop_reason == "tool_use":
-            rt = response_to_text(response)
-            if not rt:
-                consecutive_tool_only += 1
-            else:
-                consecutive_tool_only = 0
 
         if memory_store and response.stop_reason != "tool_use":
             text = response_to_text(response)
@@ -603,18 +591,6 @@ async def async_agent_loop(
             consecutive_dedup = 0
 
         messages.append({"role": "user", "content": results})
-
-        if consecutive_tool_only >= MAX_CONSECUTIVE_TOOL_ONLY:
-            print(f"[force] {consecutive_tool_only} consecutive tool-only rounds, forcing text response")
-            messages.append({
-                "role": "user",
-                "content": (
-                    "你已经进行了多次工具调用，获得了足够的上下文信息。"
-                    "请直接输出最终回答，不要再调用任何工具。"
-                ),
-            })
-            consecutive_tool_only = 0
-            force_text_response = True
 
     emit_hook(
         hook_manager,
