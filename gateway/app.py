@@ -5,18 +5,16 @@ import asyncio
 import json
 import os
 from pathlib import Path
-import time
 from typing import Any
 
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
-from agent.CLI.app import response_to_text
 from agent.memory.store import MemoryStore
-from agent.runtime.agent.agent import Agent, AgentConfig
+from agent.runtime.agent.agent import Agent
 from agent.trace.trace import make_session_id
-from gateway.events import EventBroker, LiveEventHook
-from gateway.llm import build_request_llm_client
+from gateway.chat import run_chat as run_gateway_chat
+from gateway.events import EventBroker
 from gateway.state import GatewayState
 from gateway.state import resolve_workspace_path
 from gateway.trace_reader import read_trace_events
@@ -91,116 +89,16 @@ def parse_message(raw_message: str | bytes) -> dict[str, Any]:
     return message
 
 
-async def forward_session_events(
-    websocket: ServerConnection,
-    session_id: str,
-    event_queue: asyncio.Queue[dict[str, Any]],
-) -> None:
-    try:
-        while True:
-            event = await event_queue.get()
-            await send_json(websocket, event)
-    except asyncio.CancelledError:
-        raise
-
-
 async def run_chat(websocket: ServerConnection, message: dict[str, Any]) -> None:
-    prompt = str(message.get("message", "")).strip()
-    if not prompt:
-        await send_json(
-            websocket,
-            {
-                "type": "error",
-                "error": "message is required",
-            },
-        )
-        return
-
-    session_id = str(message.get("session_id") or make_session_id())
-    workspace = workspace_for_session(session_id)
-    memory_root, _trace_root, skills_root = state.roots_for_session(session_id)
-    max_tokens = int(message.get("max_tokens") or 1024)
-    max_steps = int(message.get("max_steps") or 12)
-    event_queue = broker.subscribe(session_id)
-    forwarder = asyncio.create_task(forward_session_events(websocket, session_id, event_queue))
-    started_at = time.monotonic()
-    log(f"chat start session={session_id} workspace={workspace} chars={len(prompt)}")
-
-    await send_json(
+    await run_gateway_chat(
         websocket,
-        {
-            "type": "chat.started",
-            "session_id": session_id,
-        },
+        message,
+        state=state,
+        broker=broker,
+        send_json=send_json,
+        log=log,
+        agent_factory=Agent,
     )
-
-    try:
-        memory_store = MemoryStore(memory_root)
-        agent = Agent(
-            AgentConfig(
-                workspace=workspace,
-                session_id=session_id,
-                max_tokens=max_tokens,
-                max_steps=max_steps,
-                llm_client=build_request_llm_client(message),
-                memory_store=memory_store,
-                skills_root=skills_root,
-                trace_enabled=True,
-                hooks=[LiveEventHook(broker)],
-            )
-        )
-
-        response = await agent.async_run(
-            [{"role": "user", "content": prompt}],
-        )
-
-        if isinstance(response, list):
-            answer = "Agent 运行异常，请检查模型配置或稍后重试。"
-        else:
-            answer = response_to_text(response)
-            if not answer:
-                blocks = getattr(response, "content", [])
-                tool_uses = [b for b in blocks if getattr(b, "type", None) == "tool_use"]
-                stop_reason = getattr(response, "stop_reason", "")
-                if tool_uses:
-                    tool_names = ", ".join(getattr(b, "name", "?") for b in tool_uses)
-                    if stop_reason == "max_steps":
-                        answer = f"Agent 达到最大步数，以下工具调用未完成：{tool_names}"
-                    elif stop_reason == "max_tokens":
-                        answer = f"响应被截断（超出 max_tokens），以下工具调用未完成：{tool_names}"
-                    else:
-                        answer = f"已调用工具：{tool_names}"
-                elif stop_reason == "max_tokens":
-                    answer = "响应被截断（超出 max_tokens），请重试或增加 max_tokens。"
-                elif stop_reason == "max_steps":
-                    answer = "Agent 达到最大步数，任务未完成。请简化问题或分多步提问。"
-                else:
-                    answer = "Agent 已完成，但没有返回文本。"
-
-        await send_json(
-            websocket,
-            {
-                "type": "chat.response",
-                "session_id": session_id,
-                "answer": answer,
-            },
-        )
-        elapsed = time.monotonic() - started_at
-        log(f"chat complete session={session_id} elapsed={elapsed:.2f}s")
-    except Exception as exc:
-        log(f"chat error session={session_id}: {exc}")
-        await send_json(
-            websocket,
-            {
-                "type": "error",
-                "session_id": session_id,
-                "error": str(exc),
-            },
-        )
-    finally:
-        forwarder.cancel()
-        broker.unsubscribe(session_id, event_queue)
-        await asyncio.gather(forwarder, return_exceptions=True)
 
 
 async def send_memory(websocket: ServerConnection, message: dict[str, Any]) -> None:

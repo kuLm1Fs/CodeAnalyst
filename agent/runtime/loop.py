@@ -4,6 +4,12 @@ from typing import Any
 from agent.tools.registry import TOOLS, ToolResult, execute_tool
 from agent.trace.trace import make_session_id, AgentTrace, TraceHook
 from agent.runtime.hooks import Hook, HookManager
+from agent.runtime.messages import (
+    response_to_text,
+    serialize_content_blocks,
+    step_budget_warning,
+    truncate_messages,
+)
 from agent.memory.store import MemoryStore
 from agent.runtime.session import prepare_session_messages
 from agent.runtime.rollback import SessionRollback, create_rollback_hook
@@ -20,42 +26,6 @@ def get_default_client():
     from agent.LLM.client import get_default_client as create_default_client
 
     return create_default_client()
-
-def response_to_text(response) -> str:
-    texts = [block.text for block in response.content if getattr(block, "type", None) == "text"]
-    return "\n".join(texts).strip()
-
-def make_json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-
-    if isinstance(value, dict):
-        return {
-            str(key): make_json_safe(item)
-            for key, item in value.items()
-        }
-
-    if isinstance(value, (list, tuple)):
-        return [make_json_safe(item) for item in value]
-
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return make_json_safe(model_dump(mode="json", exclude_none=True))
-
-    block_type = getattr(value, "type", None)
-    if block_type:
-        serialized = {"type": block_type}
-        for key in ("text", "id", "name", "input", "thinking", "signature", "content"):
-            if hasattr(value, key):
-                serialized[key] = make_json_safe(getattr(value, key))
-        return serialized
-
-    return str(value)
-
-
-def serialize_content_blocks(content: list[Any]) -> list[Any]:
-    return [make_json_safe(block) for block in content]
-
 
 def emit_hook(
         hook_manager: HookManager,
@@ -93,45 +63,6 @@ def _load_base_prompt(role: str = "main", prompt_override: str | None = None) ->
         return prompt_path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
-
-
-def _truncate_messages(
-    messages: list,
-    max_context_messages: int = 10,
-) -> list:
-    if len(messages) <= max_context_messages:
-        return messages
-    first = messages[:1]
-    last = messages[-(max_context_messages - 1):]
-
-    known_ids: set[str] = set()
-    for m in first + last:
-        if m.get("role") == "assistant":
-            content = m.get("content", [])
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        bid = block.get("id")
-                        if bid:
-                            known_ids.add(bid)
-
-    cleaned: list = []
-    for m in last:
-        if m.get("role") == "user":
-            content = m.get("content", [])
-            if isinstance(content, list):
-                filtered = [
-                    b for b in content
-                    if not (isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") not in known_ids)
-                ]
-                if filtered:
-                    cleaned.append({"role": "user", "content": filtered})
-            else:
-                cleaned.append(m)
-        else:
-            cleaned.append(m)
-
-    return first + cleaned
 
 
 def select_skills_for_messages(
@@ -247,7 +178,7 @@ def _prepare_loop(
                 hook_manager,
                 "message",
                 {
-                    "role": message.get("role", "unknow"),
+                    "role": message.get("role", "unknown"),
                     "content": str(message.get("content", "")),
                 },
                 session_id=session_id,
@@ -322,16 +253,18 @@ async def async_agent_loop(
         request_kwargs = {
             "model": llm_client.default_model,
             "max_tokens": max_tokens,
-            "messages": _truncate_messages(messages),
+            "messages": truncate_messages(messages),
             "tools": available_tools,
         }
         if system_prompt:
-            request_kwargs["messages"] = [{"role": "system", "content": system_prompt}] + request_kwargs["messages"]
+            request_kwargs["messages"] = [
+                {"role": "system", "content": system_prompt + step_budget_warning(i, max_steps)}
+            ] + request_kwargs["messages"]
 
         response = None
         for ctx_limit in [10, 6, 4]:
             if ctx_limit != 10:
-                request_kwargs["messages"] = _truncate_messages(messages, ctx_limit)
+                request_kwargs["messages"] = truncate_messages(messages, ctx_limit)
             try:
                 response = llm_client.messages.create(**request_kwargs)
                 break

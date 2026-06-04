@@ -8,7 +8,7 @@ import {
   buildGatewayUrlCandidates,
   createProjectRecord,
   createProjectRecordFromPath,
-  renderMarkdownLite,
+  renderMarkdown,
 } from "../dist/app-utils.js";
 
 test("buildChatPayload includes provider config when api key and model are present", () => {
@@ -23,7 +23,8 @@ test("buildChatPayload includes provider config when api key and model are prese
     type: "chat",
     message: "hello",
     session_id: "session-1",
-    max_tokens: 1024,
+    max_tokens: 4096,
+    max_steps: 12,
     provider_config: {
       api_key: "sk-test",
       base_url: "https://example.test/v1",
@@ -132,11 +133,13 @@ test("buildAttachmentPrompt includes text file contents and names unsupported fi
   );
 });
 
-test("renderMarkdownLite escapes html and renders fenced code blocks", () => {
-  assert.equal(
-    renderMarkdownLite("Hi <x>\n\n```diff\n+ added\n```"),
-    '<p>Hi &lt;x&gt;</p><pre class="code-block language-diff"><code>+ added</code></pre>',
-  );
+test("renderMarkdown escapes html and renders fenced code blocks", () => {
+  const html = renderMarkdown("Hi <x>\n\n```diff\n+ added\n```");
+
+  assert.match(html, /agent-message-content/);
+  assert.match(html, /Hi &lt;x&gt;/);
+  assert.match(html, /language-diff/);
+  assert.match(html, /\+ added/);
 });
 
 test("createProjectRecord trims input and keeps optional path only when present", () => {

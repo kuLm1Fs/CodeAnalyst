@@ -99,7 +99,11 @@ def test_agent_loop_loads_and_persists_session_memory(tmp_path: Path) -> None:
         memory_store=store,
     )
 
-    sent_messages = fake_client.messages.calls[0]["messages"]
+    sent_messages = [
+        message
+        for message in fake_client.messages.calls[0]["messages"]
+        if message.get("role") != "system"
+    ]
     saved_messages = store.load_messages("memory-session")
 
     assert sent_messages[0] == {"role": "user", "content": "previous"}
@@ -223,3 +227,22 @@ def test_async_agent_loop_tool_filter(tmp_path: Path) -> None:
     assert "read_file" in tool_names
     assert "glob" in tool_names
     assert "write_file" not in tool_names
+
+
+def test_agent_loop_warns_model_when_near_step_budget(tmp_path: Path) -> None:
+    fake_client = FakeLLMClient(
+        [response("end_turn", [text_block("done")])]
+    )
+
+    agent_loop(
+        messages=[{"role": "user", "content": "review"}],
+        workspace=tmp_path,
+        session_id="budget-warning",
+        llm_client=fake_client,
+        max_steps=3,
+    )
+
+    system_message = fake_client.messages.calls[0]["messages"][0]
+    assert system_message["role"] == "system"
+    assert "near the tool budget" in system_message["content"]
+    assert "produce the final answer" in system_message["content"]

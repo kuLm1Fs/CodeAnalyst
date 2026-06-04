@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseCliArgs } from "../dist/app-utils.js";
-import { GatewayAgentRuntime } from "../dist/gateway-runtime.js";
+import { GatewayAgentRuntime, buildGatewayEnvironment } from "../dist/gateway-runtime.js";
 
 test("gateway runtime maps websocket messages onto TUI events", () => {
   const args = parseCliArgs(["--runtime", "gateway", "--session", "s1", "--workspace", "/tmp"]);
@@ -43,4 +43,25 @@ test("gateway runtime maps websocket messages onto TUI events", () => {
   assert.equal(events.find((event) => event.type === "assistant_message")?.content, "done");
 
   runtime.dispose();
+});
+
+test("gateway runtime loads provider config from workspace dotenv", () => {
+  const env = buildGatewayEnvironment(
+    "/tmp/project",
+    {
+      MINIMAX_API_KEY: "shell-key",
+    },
+    (path) => {
+      assert.equal(path, "/tmp/project/.env");
+      return [
+        "MINIMAX_API_KEY=dotenv-key",
+        "MINIMAX_BASE_URL=https://api.minimax.example/v1",
+        "MINIMAX_MODEL_ID='minimax-text-01'",
+      ].join("\n");
+    },
+  );
+
+  assert.equal(env.MINIMAX_API_KEY, "shell-key");
+  assert.equal(env.MINIMAX_BASE_URL, "https://api.minimax.example/v1");
+  assert.equal(env.MINIMAX_MODEL_ID, "minimax-text-01");
 });

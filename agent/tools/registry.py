@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import queue
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -35,12 +37,13 @@ class ToolResult:
 BUILTIN_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "read_file",
-        "description": "Read a text file from the current workspace.",
+        "description": "Read UTF-8 text lines from a file in the current workspace. Use offset and limit to page through large files by line number.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
-                "limit": {"type": "integer"},
+                "path": {"type": "string", "description": "Workspace-relative file path."},
+                "limit": {"type": "integer", "description": "Maximum number of lines to read."},
+                "offset": {"type": "integer", "description": "Zero-based line offset to start reading from."},
             },
             "required": ["path"],
         },
@@ -149,6 +152,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._schemas: dict[str, dict[str, Any]] = {}
         self._handlers: dict[str, Callable[..., str | ToolResult]] = {}
+        self._metadata: dict[str, dict[str, Any]] = {}
 
     def register(
         self,
@@ -156,6 +160,11 @@ class ToolRegistry:
         description: str,
         input_schema: dict[str, Any],
         handler: Callable[..., str | ToolResult],
+        *,
+        permission: str = "workspace.read",
+        writes_files: bool = False,
+        timeout_seconds: float = 30.0,
+        retry_count: int = 1,
     ) -> None:
         self._schemas[name] = {
             "name": name,
@@ -163,10 +172,17 @@ class ToolRegistry:
             "input_schema": input_schema,
         }
         self._handlers[name] = handler
+        self._metadata[name] = {
+            "permission": permission,
+            "writes_files": writes_files,
+            "timeout_seconds": timeout_seconds,
+            "retry_count": retry_count,
+        }
 
     def unregister(self, name: str) -> None:
         self._schemas.pop(name, None)
         self._handlers.pop(name, None)
+        self._metadata.pop(name, None)
 
     def has(self, name: str) -> bool:
         return name in self._handlers
@@ -178,6 +194,54 @@ class ToolRegistry:
         if names is None:
             return list(self._schemas.values())
         return [self._schemas[n] for n in names if n in self._schemas]
+
+    def get_mcp_like_schemas(self, names: list[str] | None = None) -> list[dict[str, Any]]:
+        schemas = self.get_schemas(names)
+        exported = []
+        for schema in schemas:
+            name = schema["name"]
+            metadata = self._metadata[name]
+            attempts = int(metadata["retry_count"]) + 1
+            exported.append(
+                {
+                    "name": name,
+                    "description": schema["description"],
+                    "parameters": schema["input_schema"],
+                    "permission": metadata["permission"],
+                    "writes_files": metadata["writes_files"],
+                    "timeout_policy": {
+                        "timeout_seconds": metadata["timeout_seconds"],
+                        "retry_count": metadata["retry_count"],
+                        "fallback_message": f"Error: ToolExecutionFailed: {name} failed after {attempts} attempt(s).",
+                    },
+                }
+            )
+        return exported
+
+    def _run_handler_with_timeout(
+        self,
+        handler: Callable[..., str | ToolResult],
+        timeout_seconds: float,
+        **kwargs: Any,
+    ) -> str | ToolResult:
+        results: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+        def run() -> None:
+            try:
+                results.put(("result", handler(**kwargs)))
+            except Exception as exc:
+                results.put(("error", exc))
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout_seconds)
+        if thread.is_alive():
+            raise TimeoutError
+
+        kind, value = results.get_nowait()
+        if kind == "error":
+            raise value
+        return value
 
     def execute(
         self,
@@ -191,13 +255,31 @@ class ToolRegistry:
         if not isinstance(tool_input, dict):
             return ToolResult(content=f"Error: ValidationError: tool input for {name} must be an object")
 
-        try:
-            result = handler(**tool_input, workspace=workspace)
-            return ToolResult.from_value(result)
-        except TypeError as e:
-            return ToolResult(content=f"Error: ValidationError: invalid arguments for {name}: {e}")
-        except Exception as e:
-            return ToolResult(content=f"Error: tool {name} failed: {e}")
+        metadata = self._metadata[name]
+        retry_count = int(metadata["retry_count"])
+        timeout_seconds = float(metadata["timeout_seconds"])
+
+        for attempt in range(retry_count + 1):
+            try:
+                result = self._run_handler_with_timeout(
+                    handler,
+                    timeout_seconds,
+                    **tool_input,
+                    workspace=workspace,
+                )
+                return ToolResult.from_value(result)
+            except TypeError as e:
+                return ToolResult(content=f"Error: ValidationError: invalid arguments for {name}: {e}")
+            except TimeoutError:
+                if attempt >= retry_count:
+                    return ToolResult(
+                        content=f"Error: ToolTimeout: {name} exceeded {timeout_seconds:g}s; returning fallback result."
+                    )
+            except Exception as e:
+                if attempt >= retry_count:
+                    return ToolResult(content=f"Error: tool {name} failed: {e}")
+
+        return ToolResult(content=f"Error: ToolExecutionFailed: {name} failed after {retry_count + 1} attempt(s).")
 
 
 registry = ToolRegistry()
@@ -206,11 +288,14 @@ for schema in BUILTIN_SCHEMAS:
     name = schema["name"]
     handler = BUILTIN_HANDLERS.get(name)
     if handler:
+        writes_files = name in {"write_file", "safe_edit"}
         registry.register(
             name=name,
             description=schema["description"],
             input_schema=schema["input_schema"],
             handler=handler,
+            permission="workspace.write" if writes_files else "workspace.read",
+            writes_files=writes_files,
         )
 
 def _delegate_handler(**kwargs: Any) -> str:
@@ -254,6 +339,9 @@ registry.register(
         "required": ["task"],
     },
     handler=_delegate_handler,
+    permission="workspace.delegate",
+    writes_files=True,
+    timeout_seconds=120.0,
 )
 
 TOOLS = registry.get_schemas()

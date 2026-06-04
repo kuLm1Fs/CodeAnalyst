@@ -3,6 +3,8 @@ export type ProviderConfig = {
   baseUrl?: string;
   model: string;
   provider: string;
+  maxTokens?: number;
+  maxSteps?: number;
 };
 
 export type ChatPayload = {
@@ -10,6 +12,7 @@ export type ChatPayload = {
   message: string;
   session_id: string;
   max_tokens: number;
+  max_steps: number;
   provider_config?: {
     api_key: string;
     base_url?: string;
@@ -78,6 +81,5 @@ export function buildChatPayload(
   message: string,
   sessionId: string,
   providerConfig?: ProviderConfig,
-  maxTokens?: number,
 ): ChatPayload;
 export function buildProjectSwitchPayload(sessionId: string, path: string): ProjectSwitchPayload;

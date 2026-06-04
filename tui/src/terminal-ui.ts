@@ -1,7 +1,6 @@
 import { emitKeypressEvents } from "node:readline";
-import stringWidth from "string-width";
 
-import { chooseLayout, formatArgsSummary, padRight, truncateText, wrapText } from "./app-utils.js";
+import { formatArgsSummary, truncateText, visibleWidth, wrapText } from "./app-utils.js";
 import type { AgentEvent, AgentRuntime, AgentStatus, AgentTask, RuntimeMetrics, ToolStatus } from "./events.js";
 
 type ChatLine =
@@ -31,11 +30,6 @@ const color = {
   green: (text: string) => `\x1b[32m${text}\x1b[0m`,
   yellow: (text: string) => `\x1b[33m${text}\x1b[0m`,
   red: (text: string) => `\x1b[31m${text}\x1b[0m`,
-};
-
-const divider = {
-  vertical: color.dim(" │ "),
-  horizontal: (width: number, label: string) => color.dim(sectionRule(width, label)),
 };
 
 export class TerminalUi {
@@ -229,24 +223,22 @@ export class TerminalUi {
     }
     const width = Math.max(50, process.stdout.columns || 88);
     const height = Math.max(18, process.stdout.rows || 28);
+
     const header = this.renderHeader(width);
     const input = this.renderInput(width);
     const bodyHeight = Math.max(5, height - header.length - input.length);
-    const body = chooseLayout(width, height) === "side" ? this.renderSideBody(width, bodyHeight) : this.renderStackedBody(width, bodyHeight);
+    const body = this.renderChat(width, bodyHeight);
+
     const screen = [...header, ...body, ...input].slice(0, height).map((line) => fitColumn(line, width));
     while (screen.length < height) {
       screen.push("");
     }
 
     // Move cursor to input position (IME needs this anchor)
-    // screen = header + body + input. input[1] is the content line (middle of 3-line input frame).
-    // screen indices: header.len (3) + bodyHeight + 0 = border, + 1 = content, + 2 = border
-    // content is at index: header.len + bodyHeight + 1 = height - 3 + 1 = height - 2 (0-based)
-    // 1-based row = (height - 2) + 1 = height - 1
-    const inputRow = height - 1; // 1-based
+    const inputRow = height; // 1-based
     const promptStr = "❯ ";
-    const promptCol = stringWidth(promptStr); // should be 2
-    const cursorCol = promptCol + 1 + stringWidth(this.input); // prompt + space + input
+    const promptCol = visibleWidth(promptStr);
+    const cursorCol = promptCol + visibleWidth(this.input) + 1;
     const cursorMove = `\x1b[${inputRow};${cursorCol}H`;
     const screenOutput = `${CLEAR}${screen.map((line) => `${CLEAR_LINE}${line}`).join("\n")}${cursorMove}`;
     process.stdout.write(screenOutput);
@@ -256,37 +248,13 @@ export class TerminalUi {
     const status = this.status;
     const indicator = runtimeIndicator(status);
     return [
-      color.bold(padRight(` ${indicator} ${this.options.projectName} | model ${this.model} | cwd ${this.options.workspace} | ${status}`, width)),
-      color.dim(padRight(` step: ${this.currentStep}`, width)),
+      color.dim(` ${this.options.projectName} (${this.model}) ${indicator}`),
       color.dim("─".repeat(width)),
     ];
   }
 
   private renderInput(width: number): string[] {
     return renderInputFrame(this.input, this.status, width);
-  }
-
-  private renderSideBody(width: number, height: number): string[] {
-    const separatorWidth = 3;
-    const statusWidth = Math.min(40, Math.max(32, Math.floor(width * 0.32)));
-    const chatWidth = Math.max(20, width - statusWidth - separatorWidth);
-    const chat = this.withPanelHeader(this.chatTitle(), chatWidth, this.renderChat(chatWidth, Math.max(1, height - 1)));
-    const status = this.withPanelHeader("Status", statusWidth, this.renderStatus(statusWidth, Math.max(1, height - 1)));
-    return Array.from(
-      { length: height },
-      (_, index) => `${fitColumn(chat[index] || "", chatWidth)}${divider.vertical}${fitColumn(status[index] || "", statusWidth)}`,
-    );
-  }
-
-  private renderStackedBody(width: number, height: number): string[] {
-    const statusHeight = Math.min(10, Math.max(6, Math.floor(height * 0.35)));
-    const chatHeight = Math.max(3, height - statusHeight - 2);
-    return [
-      divider.horizontal(width, this.chatTitle()),
-      ...this.renderChat(width, chatHeight),
-      divider.horizontal(width, "Status"),
-      ...this.renderStatus(width, statusHeight),
-    ].slice(0, height);
   }
 
   private renderChat(width: number, height: number): string[] {
@@ -299,53 +267,14 @@ export class TerminalUi {
         lines.push(...renderMessageBox(item, width));
         lines.push("");
       } else if (item.kind === "tool") {
-        lines.push(...this.renderTool(item, width));
-        lines.push("");
+        lines.push(...renderToolInline(item, width));
       } else {
-        lines.push(...this.renderWrapped("error> ", item.content, width).map((line) => color.red(line)));
+        lines.push(...renderErrorLine(item.content, width));
         lines.push("");
       }
     }
     this.chatScrollOffset = Math.min(this.chatScrollOffset, Math.max(0, lines.length - height));
     return viewport(lines, height, this.chatScrollOffset);
-  }
-
-  private renderTool(item: Extract<ChatLine, { kind: "tool" }>, width: number): string[] {
-    return renderToolPreview(item, width);
-  }
-
-  private renderWrapped(prefix: string, content: string, width: number): string[] {
-    const bodyWidth = Math.max(8, width - visibleLength(prefix));
-    const prefixWidth = visibleLength(prefix);
-    return wrapText(content, bodyWidth).map((line, index) => `${index === 0 ? prefix : " ".repeat(prefixWidth)}${line}`);
-  }
-
-  private renderStatus(width: number, height: number): string[] {
-    const topLines = [
-      padRight(`state: ${this.status}`, width),
-      padRight(`step: ${this.currentStep}`, width),
-      padRight(`tokens: ${this.metrics.tokens || "--"}  cost: ${this.metrics.cost || "--"}`, width),
-      padRight(`latency: ${this.metrics.latency || "--"}  git: ${this.metrics.git || "--"}`, width),
-    ];
-    const taskLines = [
-      color.dim(padRight("Tasks", width)),
-      ...this.renderTasks(width),
-    ];
-    const logCapacity = Math.max(0, height - topLines.length - taskLines.length - 1);
-    const lines = [
-      ...topLines,
-      ...taskLines,
-      color.dim(padRight("Logs", width)),
-      ...this.logs.slice(-logCapacity).map((line) => padRight(`- ${line}`, width)),
-    ];
-    return head(lines, height);
-  }
-
-  private renderTasks(width: number): string[] {
-    if (this.tasks.length === 0) {
-      return [padRight("- none", width)];
-    }
-    return this.tasks.slice(0, 5).map((task) => padRight(`${taskMark(task.status)} ${task.title}`, width));
   }
 
   private pushSystem(content: string): void {
@@ -357,17 +286,6 @@ export class TerminalUi {
     this.logs = this.logs.slice(-8);
   }
 
-  private withPanelHeader(title: string, width: number, lines: string[]): string[] {
-    return [divider.horizontal(width, title), ...lines];
-  }
-
-  private chatTitle(): string {
-    if (this.chatScrollOffset <= 0) {
-      return "Chat / Trace";
-    }
-    return this.chatScrollOffset > 999 ? "Chat / Trace ↑top" : `Chat / Trace ↑${this.chatScrollOffset}`;
-  }
-
   private scrollChat(delta: number): void {
     this.chatScrollOffset = Math.max(0, this.chatScrollOffset + delta);
     this.render();
@@ -376,14 +294,6 @@ export class TerminalUi {
 
 function isKeypress(value: unknown): value is { name?: string; ctrl?: boolean; sequence?: string } {
   return typeof value === "object" && value !== null;
-}
-
-function tail(lines: string[], height: number): string[] {
-  const visible = lines.slice(Math.max(0, lines.length - height));
-  while (visible.length < height) {
-    visible.push("");
-  }
-  return visible;
 }
 
 function viewport(lines: string[], height: number, scrollOffset: number): string[] {
@@ -397,61 +307,70 @@ function viewport(lines: string[], height: number, scrollOffset: number): string
   return visible;
 }
 
-function head(lines: string[], height: number): string[] {
-  const visible = lines.slice(0, height);
-  while (visible.length < height) {
-    visible.push("");
-  }
-  return visible;
-}
-
-export function renderToolPreview(item: Extract<ChatLine, { kind: "tool" }>, width: number): string[] {
-  const boxWidth = Math.max(20, width);
-  const borderWidth = Math.max(8, boxWidth - 2);
-  const innerWidth = Math.max(8, boxWidth - 4);
-  const title = ` ${toolStatusDot(item.status)} ${item.name} ${item.status} `;
-  const borderFill = "─".repeat(Math.max(0, borderWidth - visibleLength(title)));
-  const bodyLines = [
-    ...wrapText(`args: ${formatArgsSummary(item.args, innerWidth)}`, innerWidth),
-    ...(item.resultPreview ? wrapText(`result: ${item.resultPreview}`, innerWidth) : []),
-  ];
-  const previewLines = bodyLines.slice(0, 4);
-  const hidden = bodyLines.length - previewLines.length;
-  const lines = [
-    fitColumn(`╭${title}${borderFill}╮`, boxWidth),
-    ...previewLines.map((line) => fitColumn(`│ ${line}`, boxWidth - 1) + "│"),
-  ];
-
-  if (hidden > 0) {
-    lines.push(fitColumn(color.dim(`│ ... ${hidden} more hidden`), boxWidth - 1) + color.dim("│"));
-  }
-
-  lines.push(color.dim(`╰${"─".repeat(borderWidth)}╯`));
-
-  if (item.status === "failed") {
-    return lines.map((line) => color.red(truncateVisible(line, width)));
-  }
-  return lines.map((line) => truncateVisible(line, width));
+export function renderToolInline(item: Extract<ChatLine, { kind: "tool" }>, width: number): string[] {
+  const statusDot = toolStatusDot(item.status);
+  const argsSummary = formatArgsSummary(item.args, width - 10);
+  const line = `  ${statusDot} ${color.dim(item.name)} ${color.dim(argsSummary)}`;
+  return [fitColumn(line, width)];
 }
 
 export function renderMessageBox(item: Extract<ChatLine, { kind: "message" }>, width: number): string[] {
-  const boxWidth = Math.max(20, width);
-  const borderWidth = Math.max(8, boxWidth - 2);
-  const innerWidth = Math.max(8, boxWidth - 4);
-  const title = ` ${messageRoleLabel(item.role)} `;
-  const borderFill = "─".repeat(Math.max(0, borderWidth - visibleLength(title)));
-  const contentLines = wrapText(item.content, innerWidth);
+  const roleLabel = messageRoleLabel(item.role);
+  const contentLines = wrapText(renderTerminalMarkdown(item.content), Math.max(8, width - 2));
   const lines = [
-    fitColumn(`╭${title}${borderFill}╮`, boxWidth),
-    ...contentLines.map((line) => fitColumn(`│ ${line}`, boxWidth - 1) + "│"),
-    color.dim(`╰${"─".repeat(borderWidth)}╯`),
+    roleLabel,
+    ...contentLines.map((line) => `  ${line}`),
   ];
 
-  const fitted = lines.map((line) => truncateVisible(line, width));
   if (item.role === "system") {
-    return fitted.map((line) => color.dim(line));
+    return lines.map((line) => color.dim(line));
   }
-  return fitted;
+  return lines;
+}
+
+export function renderErrorLine(content: string, width: number): string[] {
+  return [`  ${color.red("error")} ${content}`];
+}
+
+export function renderTerminalMarkdown(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => renderInlineMarkdown(line))
+    .join("\n");
+}
+
+function renderInlineMarkdown(text: string): string {
+  let output = "";
+  for (let index = 0; index < text.length; ) {
+    if (text[index] === "`") {
+      const end = text.indexOf("`", index + 1);
+      if (end === -1) {
+        output += text.slice(index);
+        break;
+      }
+      output += text.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
+
+    if (text.startsWith("**", index)) {
+      const end = text.indexOf("**", index + 2);
+      if (end > index + 2) {
+        output += `\x1b[1m${text.slice(index + 2, end)}\x1b[22m`;
+        index = end + 2;
+        continue;
+      }
+    }
+
+    const codePoint = text.codePointAt(index);
+    if (codePoint === undefined) {
+      break;
+    }
+    const char = String.fromCodePoint(codePoint);
+    output += char;
+    index += char.length;
+  }
+  return output;
 }
 
 export function renderInputFrame(input: string, status: AgentStatus, width: number): string[] {
@@ -464,7 +383,6 @@ export function renderInputFrame(input: string, status: AgentStatus, width: numb
   return [
     color.dim("─".repeat(width)),
     `${prompt}${truncatedInput}${busyText}`,
-    color.dim("─".repeat(width)),
   ];
 }
 
@@ -483,19 +401,6 @@ function truncateToWidth(text: string, maxWidth: number): string {
     width += charW;
   }
   return result;
-}
-
-export function taskMark(status: AgentTask["status"]): string {
-  if (status === "done") {
-    return color.dim("●");
-  }
-  if (status === "running") {
-    return color.green("●");
-  }
-  if (status === "failed") {
-    return color.red("●");
-  }
-  return color.dim("○");
 }
 
 function runtimeIndicator(status: AgentStatus): string {
@@ -520,24 +425,12 @@ function toolStatusDot(status: ToolStatus): string {
 
 function messageRoleLabel(role: Extract<ChatLine, { kind: "message" }>["role"]): string {
   if (role === "lumaK") {
-    return `${color.green("●")} ${color.bold("lumaK")}`;
+    return color.green("lumaK");
   }
   if (role === "you") {
-    return `${color.cyan("●")} ${color.bold("you")}`;
+    return color.cyan("you");
   }
-  return "system";
-}
-
-function sectionRule(width: number, label: string): string {
-  if (width <= 0) {
-    return "";
-  }
-  const title = ` ${label} `;
-  const titleWidth = visibleLength(title);
-  if (width <= titleWidth + 2) {
-    return "─".repeat(width);
-  }
-  return `${title}${"─".repeat(width - titleWidth)}`;
+  return color.dim("system");
 }
 
 function stripAnsi(text: string): string {
@@ -545,7 +438,12 @@ function stripAnsi(text: string): string {
 }
 
 function visibleLength(text: string): number {
-  return stringWidth(stripAnsi(text));
+  return visibleWidth(stripAnsi(text));
+}
+
+function fitColumn(text: string, width: number): string {
+  const truncated = truncateVisible(text, width);
+  return `${truncated}${" ".repeat(Math.max(0, width - visibleLength(truncated)))}`;
 }
 
 function truncateVisible(text: string, width: number): string {
@@ -582,15 +480,6 @@ function truncateVisible(text: string, width: number): string {
   return `${output}\x1b[0m...`;
 }
 
-function padVisible(text: string, width: number): string {
-  const truncated = truncateVisible(text, width);
-  return `${truncated}${" ".repeat(Math.max(0, width - visibleLength(truncated)))}`;
-}
-
-function fitColumn(text: string, width: number): string {
-  return padVisible(text, width);
-}
-
 function charWidth(char: string): number {
-  return stringWidth(char);
+  return visibleWidth(char);
 }

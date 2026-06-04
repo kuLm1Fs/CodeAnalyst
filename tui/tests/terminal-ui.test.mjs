@@ -1,28 +1,88 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import stringWidth from "string-width";
 
-import { renderInputFrame, renderMessageBox, renderToolPreview, taskMark } from "../dist/terminal-ui.js";
+import { TerminalUi, renderInputFrame, renderMessageBox, renderToolInline } from "../dist/terminal-ui.js";
 
-test("input frame uses divider lines and chevron prompt", () => {
+test("input frame uses divider line and chevron prompt", () => {
   const lines = renderInputFrame("hello", "Idle", 50);
 
-  assert.equal(lines.length, 3);
+  assert.equal(lines.length, 2);
   assert.equal(stripAnsi(lines[0]), "─".repeat(50));
   assert.equal(stripAnsi(lines[1]), "❯ hello");
-  assert.equal(stripAnsi(lines[2]), "─".repeat(50));
 });
 
-test("message and tool boxes keep every visible row aligned", () => {
-  const message = renderMessageBox(
+test("terminal cursor anchors on the input text row after rendered text", () => {
+  const runtime = {
+    subscribe() {
+      return () => {};
+    },
+    dispose() {},
+    sendMessage() {
+      return Promise.resolve();
+    },
+  };
+  const ui = new TerminalUi(runtime, {
+    projectName: "LumaK",
+    model: "test-model",
+    workspace: "/tmp/lumak",
+  });
+  ui.input = "hello";
+
+  const originalRows = process.stdout.rows;
+  const originalColumns = process.stdout.columns;
+  const originalWrite = process.stdout.write;
+  let output = "";
+
+  try {
+    process.stdout.rows = 20;
+    process.stdout.columns = 60;
+    process.stdout.write = (chunk) => {
+      output += String(chunk);
+      return true;
+    };
+
+    ui.render();
+  } finally {
+    process.stdout.rows = originalRows;
+    process.stdout.columns = originalColumns;
+    process.stdout.write = originalWrite;
+  }
+
+  assert.match(output, /\x1b\[20;8H$/);
+});
+
+test("message renders role label and indented content", () => {
+  const lines = renderMessageBox(
     {
       kind: "message",
       role: "lumaK",
-      content: "Aloha! 👋 How can I help you today? Whether you need assistance with code, files, or anything else.",
+      content: "Aloha! 👋 How can I help you today?",
     },
     48,
   );
-  const tool = renderToolPreview(
+
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /lumaK/);
+  assert.match(lines[1], /Aloha!/);
+});
+
+test("message renders markdown bold without visible delimiters", () => {
+  const lines = renderMessageBox(
+    {
+      kind: "message",
+      role: "lumaK",
+      content: "我是来帮你干活的。**说正事，别客套。**",
+    },
+    60,
+  );
+
+  assert.equal(stripAnsi(lines[1]), "  我是来帮你干活的。说正事，别客套。");
+  assert.match(lines[1], /\x1b\[1m说正事，别客套。\x1b\[22m/);
+  assert.doesNotMatch(lines[1], /\*\*/);
+});
+
+test("tool inline shows status dot and tool name", () => {
+  const lines = renderToolInline(
     {
       id: "tool-1",
       name: "Bash",
@@ -33,28 +93,28 @@ test("message and tool boxes keep every visible row aligned", () => {
     48,
   );
 
-  assert.deepEqual(message.map(visibleLength), message.map(() => 48));
-  assert.deepEqual(tool.map(visibleLength), tool.map(() => 48));
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /Bash/);
+  assert.match(lines[0], /\x1b\[90m●\x1b\[0m/);
 });
 
-test("chat messages render as compact boxed dialogue", () => {
-  const lines = renderMessageBox(
+test("tool inline shows green dot when running", () => {
+  const lines = renderToolInline(
     {
-      kind: "message",
-      role: "lumaK",
-      content: "Here is a concise answer with enough text to wrap onto the next line cleanly.",
+      id: "tool-1",
+      name: "read_file",
+      args: { path: "src/main.ts" },
+      status: "running",
     },
     48,
   );
 
-  assert.match(lines[0], /lumaK/);
-  assert.match(lines[0], /╭/);
-  assert.match(lines.at(-1), /╰/);
-  assert.ok(lines.every((line) => line.length > 0));
-  assert.ok(lines.length >= 4);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /read_file/);
+  assert.match(lines[0], /\x1b\[32m●\x1b\[0m/);
 });
 
-test("system messages stay visually muted inside the same dialogue shape", () => {
+test("system messages stay visually muted", () => {
   const lines = renderMessageBox(
     {
       kind: "message",
@@ -68,54 +128,6 @@ test("system messages stay visually muted inside the same dialogue shape", () =>
   assert.match(lines[0], /system/);
 });
 
-test("tool preview is boxed and keeps event details compact", () => {
-  const lines = renderToolPreview(
-    {
-      id: "tool-1",
-      name: "Bash",
-      args: {
-        command:
-          "curl -s http://localhost:3000/lessons/l5 2>&1 | grep -o '\"statusCode\":[0-9]*' || echo 'Page OK'",
-        description: "Check lesson page",
-      },
-      status: "running",
-      resultPreview:
-        '"statusCode":500\nstack line 1\nstack line 2\nstack line 3\nstack line 4\nstack line 5',
-    },
-    72,
-  );
-
-  assert.match(lines[0], /Bash/);
-  assert.match(lines[0], /\x1b\[32m●\x1b\[0m/);
-  assert.ok(lines.length <= 8);
-  assert.ok(lines.some((line) => line.includes("more hidden")));
-});
-
-test("tool preview uses muted dots after commands finish", () => {
-  const lines = renderToolPreview(
-    {
-      id: "tool-1",
-      name: "Bash",
-      args: { command: "echo done" },
-      status: "success",
-      resultPreview: "done",
-    },
-    40,
-  );
-
-  assert.match(lines[0], /\x1b\[90m●\x1b\[0m/);
-});
-
-test("task marks use colored status dots", () => {
-  assert.match(taskMark("running"), /\x1b\[32m●\x1b\[0m/);
-  assert.match(taskMark("done"), /\x1b\[90m●\x1b\[0m/);
-  assert.match(taskMark("pending"), /\x1b\[90m○\x1b\[0m/);
-});
-
 function stripAnsi(text) {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
-}
-
-function visibleLength(text) {
-  return stringWidth(stripAnsi(text));
 }

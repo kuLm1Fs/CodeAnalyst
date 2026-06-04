@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any
+import time
 
 from agent.tools.registry import (
     ToolRegistry,
@@ -172,6 +173,79 @@ class TestToolRegistry:
         assert isinstance(result, ToolResult)
         assert "Error: tool broken failed: boom" in result.content
 
+    def test_execute_retries_transient_failures(self, tmp_path: Path) -> None:
+        reg = ToolRegistry()
+        attempts = 0
+
+        def flaky(workspace: Any = None) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("temporary")
+            return "ok"
+
+        reg.register(
+            name="flaky",
+            description="flaky",
+            input_schema={"type": "object", "properties": {}},
+            handler=flaky,
+            retry_count=1,
+        )
+
+        result = reg.execute("flaky", {}, workspace=tmp_path)
+
+        assert result.content == "ok"
+        assert attempts == 2
+
+    def test_execute_times_out_with_fallback_message(self, tmp_path: Path) -> None:
+        reg = ToolRegistry()
+
+        def slow(workspace: Any = None) -> str:
+            time.sleep(0.2)
+            return "late"
+
+        reg.register(
+            name="slow",
+            description="slow",
+            input_schema={"type": "object", "properties": {}},
+            handler=slow,
+            timeout_seconds=0.01,
+        )
+
+        result = reg.execute("slow", {}, workspace=tmp_path)
+
+        assert result.content == "Error: ToolTimeout: slow exceeded 0.01s; returning fallback result."
+
+    def test_export_mcp_like_schemas_includes_policy_and_permissions(self) -> None:
+        reg = ToolRegistry()
+        reg.register(
+            name="write_note",
+            description="write note",
+            input_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+            handler=lambda workspace=None: "ok",
+            permission="workspace.write",
+            writes_files=True,
+            timeout_seconds=3.0,
+            retry_count=2,
+        )
+
+        schemas = reg.get_mcp_like_schemas()
+
+        assert schemas == [
+            {
+                "name": "write_note",
+                "description": "write note",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                "permission": "workspace.write",
+                "writes_files": True,
+                "timeout_policy": {
+                    "timeout_seconds": 3.0,
+                    "retry_count": 2,
+                    "fallback_message": "Error: ToolExecutionFailed: write_note failed after 3 attempt(s).",
+                },
+            }
+        ]
+
 
 class TestBackwardCompatibility:
     def test_tools_is_list_of_schemas(self) -> None:
@@ -191,6 +265,15 @@ class TestBackwardCompatibility:
         assert registry.has("file_outline")
         assert registry.has("code_map")
         assert registry.has("symbol_lookup")
+
+    def test_read_file_schema_documents_line_pagination(self) -> None:
+        read_schema = next(schema for schema in TOOLS if schema["name"] == "read_file")
+
+        properties = read_schema["input_schema"]["properties"]
+        assert "offset" in properties
+        assert "line" in read_schema["description"].lower()
+        assert "line" in properties["limit"]["description"].lower()
+        assert "line" in properties["offset"]["description"].lower()
 
     def test_execute_tool_wrapper_works(self, tmp_path: Path) -> None:
         (tmp_path / "test.txt").write_text("hello")

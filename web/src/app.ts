@@ -8,6 +8,12 @@ import {
   type AttachmentText,
   type ProjectRecord,
 } from "./app-utils";
+import {
+  customModelOptions,
+  modelOptions,
+  providerStorageKey,
+  type ProviderConfig,
+} from "./provider-config";
 
 const assistantAvatarSrc = new URL("../assets/lumak-logo.png", import.meta.url).href;
 
@@ -56,7 +62,6 @@ const detailsState = getElement<HTMLSpanElement>("#detailsState");
 const detailsOutput = getElement<HTMLPreElement>("#detailsOutput");
 
 const selectedFiles: File[] = [];
-const providerStorageKey = "lumak.providerConfig";
 const sessionStorageKey = "lumak.sessionId";
 const conversationStorageKey = "lumak.conversations";
 const projectStorageKey = "lumak.projects";
@@ -64,23 +69,6 @@ const gatewayOverrideStorageKey = "lumak.gatewayUrl";
 const gatewayUrls = buildGatewayUrlCandidates(window.location, 8765, window.localStorage.getItem(gatewayOverrideStorageKey));
 const reconnectDelayMs = 1600;
 const maxReconnectAttempts = 8;
-const customModelOptions = ["custom"];
-const modelOptions: Record<string, string[]> = {
-  minimax: ["MiniMax-M2.7", "abab6.5s-chat", "custom"],
-  anthropic: ["claude-sonnet-4-5", "claude-opus-4-1", "custom"],
-  openai: ["gpt-5.1", "gpt-5.1-mini", "custom"],
-  deepseek: ["deepseek-chat", "deepseek-reasoner", "custom"],
-  custom: customModelOptions,
-};
-
-type ProviderConfig = {
-  apiKey: string;
-  baseUrl?: string;
-  model: string;
-  provider: string;
-  maxTokens?: number;
-  maxSteps?: number;
-};
 
 type GatewayMessage =
   | { type: "gateway.ready" }

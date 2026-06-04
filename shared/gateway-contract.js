@@ -31,12 +31,13 @@ export function normalizeTodoTasks(rawTasks) {
   });
 }
 
-export function buildChatPayload(message, sessionId, providerConfig, maxTokens = 1024) {
+export function buildChatPayload(message, sessionId, providerConfig) {
   const payload = {
     type: "chat",
     message,
     session_id: sessionId,
-    max_tokens: maxTokens,
+    max_tokens: providerConfig?.maxTokens ?? 4096,
+    max_steps: providerConfig?.maxSteps ?? 12,
   };
 
   if (providerConfig?.apiKey && providerConfig.model && providerConfig.provider) {

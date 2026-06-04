@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { parseLocalGatewayUrl, truncateText, type CliArgs } from "./app-utils.js";
 import type { AgentEvent, AgentRuntime, AgentStatus, AgentTask, RuntimeUnsubscribe } from "./events.js";
@@ -96,7 +98,7 @@ export class GatewayAgentRuntime implements AgentRuntime {
       ["run", "python", "-m", "gateway.app", "--host", parsed.host, "--port", parsed.port, "--workspace", this.args.workspace],
       {
         cwd: this.repoRoot,
-        env: process.env,
+        env: buildGatewayEnvironment(this.args.workspace),
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -258,6 +260,50 @@ export class GatewayAgentRuntime implements AgentRuntime {
       timestamp: Date.now(),
     });
   }
+}
+
+export function buildGatewayEnvironment(
+  workspace: string,
+  baseEnv: Record<string, string | undefined> = process.env,
+  readText: (path: string) => string | null = readOptionalText,
+): Record<string, string | undefined> {
+  const env = { ...baseEnv };
+  const dotenv = readText(join(workspace, ".env"));
+  if (!dotenv) {
+    return env;
+  }
+
+  for (const [key, value] of parseDotenv(dotenv)) {
+    if (!env[key]) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+function readOptionalText(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function parseDotenv(text: string): Array<[string, string]> {
+  const entries: Array<[string, string]> = [];
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || !line.includes("=")) {
+      continue;
+    }
+    const [rawKey, ...rawValue] = line.split("=");
+    const key = rawKey.trim();
+    const value = rawValue.join("=").trim().replace(/^(['"])(.*)\1$/, "$2");
+    if (key) {
+      entries.push([key, value]);
+    }
+  }
+  return entries;
 }
 
 function baseTasks(): AgentTask[] {

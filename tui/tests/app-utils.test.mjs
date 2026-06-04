@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  chooseLayout,
   displayRole,
   formatAgentEvent,
   formatArgsSummary,
@@ -72,9 +71,7 @@ test("displayRole presents assistant messages as lumak", () => {
   assert.equal(displayRole("event"), "event");
 });
 
-test("layout and compact formatting helpers keep text within terminal bounds", () => {
-  assert.equal(chooseLayout(120, 30), "side");
-  assert.equal(chooseLayout(80, 30), "stacked");
+test("compact formatting helpers keep text within terminal bounds", () => {
   assert.equal(truncateText("abcdefgh", 6), "abc...");
   assert.equal(padRight("abc", 5), "abc  ");
   assert.equal(formatArgsSummary({ query: "hello", limit: 3 }, 80), 'query="hello" limit=3');

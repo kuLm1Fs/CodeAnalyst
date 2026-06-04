@@ -30,9 +30,18 @@ package = true
 include = ["agent*", "gateway*", "lumak*"]
 
 [tool.setuptools.data-files]
+"share/lumak/tui" = [
+    "tui/package.json",
+]
 "share/lumak/tui/dist" = [
     "tui/dist/app-utils.js",
+    "tui/dist/events.js",
+    "tui/dist/gateway-contract.js",
+    "tui/dist/gateway-runtime.js",
     "tui/dist/index.js",
+    "tui/dist/mock-runtime.js",
+    "tui/dist/terminal-ui.js",
+    "tui/dist/websocket-client.js",
 ]
 "share/lumak/web/dist" = [
     "web/dist/index.html",

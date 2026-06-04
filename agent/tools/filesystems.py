@@ -44,10 +44,17 @@ def safe_path(p: str, workspace: Path | str | None = None) -> Path:
     return path
 
 
-def run_read(path: str, limit: int | None = None, workspace: Path | str | None = None) -> str:
+def run_read(
+    path: str,
+    limit: int | None = None,
+    offset: int = 0,
+    workspace: Path | str | None = None,
+) -> str:
     try:
         if limit is not None and limit <= 0:
             return "Error: ValidationError: limit must be greater than 0"
+        if offset < 0:
+            return "Error: ValidationError: offset must be greater than or equal to 0"
 
         file_path = safe_path(path, workspace)
         if not file_path.exists():
@@ -56,9 +63,14 @@ def run_read(path: str, limit: int | None = None, workspace: Path | str | None =
             return f"Error: ValidationError: path is not a file: {path}"
 
         lines = file_path.read_text(encoding="utf-8").splitlines()
-        if limit and limit < len(lines):
-            lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
-        return "\n".join(lines)
+        total_lines = len(lines)
+        if offset >= total_lines:
+            return ""
+
+        visible = lines[offset:]
+        if limit and limit < len(visible):
+            visible = visible[:limit] + [f"... ({len(lines) - offset - limit} more lines)"]
+        return "\n".join(visible)
     except UnicodeDecodeError:
         return f"Error: ValidationError: file is not valid utf-8 text: {path}"
     except ValueError as e:

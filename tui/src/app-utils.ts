@@ -14,20 +14,12 @@ export type LocalGatewayAddress = {
   port: string;
 };
 
-import wrapAnsi from "wrap-ansi";
-import stringWidth from "string-width";
-import sliceAnsi from "slice-ansi";
-
 export function wrapText(text: string, width: number): string[] {
   if (width <= 1) {
     return [text];
   }
 
-  return wrapAnsi(text, width, {
-    hard: true,
-    trim: true,
-    wordWrap: true,
-  }).split("\n");
+  return text.split("\n").flatMap((line) => wrapLine(line, width));
 }
 
 export function truncateText(text: string, width: number): string {
@@ -35,7 +27,7 @@ export function truncateText(text: string, width: number): string {
     return "";
   }
 
-  if (stringWidth(text) <= width) {
+  if (visibleWidth(text) <= width) {
     return text;
   }
 
@@ -43,12 +35,12 @@ export function truncateText(text: string, width: number): string {
     return ".".repeat(width);
   }
 
-  return `${sliceAnsi(text, 0, width - 3)}...`;
+  return `${sliceVisible(text, width - 3)}...`;
 }
 
 export function padRight(text: string, width: number): string {
   const truncated = truncateText(text, width);
-  const visible = stringWidth(truncated);
+  const visible = visibleWidth(truncated);
 
   return truncated + " ".repeat(Math.max(0, width - visible));
 }
@@ -56,10 +48,6 @@ export function padRight(text: string, width: number): string {
 export function formatArgsSummary(args: Record<string, unknown>, width = 80): string {
   const pairs = Object.entries(args).map(([key, value]) => `${key}=${formatValue(value)}`);
   return truncateText(pairs.join(" "), width);
-}
-
-export function chooseLayout(width: number, height: number): "side" | "stacked" {
-  return width >= 100 && height >= 24 ? "side" : "stacked";
 }
 
 export function formatAgentEvent(event: string, payload: AgentPayload = {}): string | null {
@@ -184,6 +172,113 @@ Options:
   --no-start-gateway     Connect to an existing gateway only
   -h, --help             Show this help
 `);
+}
+
+export function visibleWidth(text: string): number {
+  let width = 0;
+  const stripped = stripAnsi(text);
+  for (let index = 0; index < stripped.length; ) {
+    const codePoint = stripped.codePointAt(index);
+    if (codePoint === undefined) {
+      break;
+    }
+    const char = String.fromCodePoint(codePoint);
+    width += charWidth(codePoint);
+    index += char.length;
+  }
+  return width;
+}
+
+function wrapLine(line: string, width: number): string[] {
+  if (line === "") {
+    return [""];
+  }
+
+  const lines: string[] = [];
+  let current = "";
+  for (const word of line.split(/(\s+)/)) {
+    if (word === "") {
+      continue;
+    }
+    const candidate = current + word;
+    if (visibleWidth(candidate.trimEnd()) <= width) {
+      current = candidate;
+      continue;
+    }
+
+    if (current.trimEnd()) {
+      lines.push(current.trimEnd());
+      current = word.trimStart();
+    }
+
+    while (visibleWidth(current) > width) {
+      const chunk = sliceVisible(current, width);
+      lines.push(chunk);
+      current = current.slice(chunk.length);
+    }
+  }
+
+  if (current || lines.length === 0) {
+    lines.push(current.trimEnd());
+  }
+  return lines;
+}
+
+function sliceVisible(text: string, width: number): string {
+  let output = "";
+  let visible = 0;
+  for (let index = 0; index < text.length; ) {
+    const ansi = /^\x1b\[[0-9;]*m/.exec(text.slice(index));
+    if (ansi) {
+      output += ansi[0];
+      index += ansi[0].length;
+      continue;
+    }
+
+    const codePoint = text.codePointAt(index);
+    if (codePoint === undefined) {
+      break;
+    }
+    const char = String.fromCodePoint(codePoint);
+    const charW = charWidth(codePoint);
+    if (visible + charW > width) {
+      break;
+    }
+    output += char;
+    visible += charW;
+    index += char.length;
+  }
+  return output;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function charWidth(codePoint: number): number {
+  if (codePoint === 0 || codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) {
+    return 0;
+  }
+  if (codePoint >= 0x300 && codePoint <= 0x36f) {
+    return 0;
+  }
+  if (
+    codePoint >= 0x1100 && (
+      codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    )
+  ) {
+    return 2;
+  }
+  return 1;
 }
 
 function formatValue(value: unknown): string {

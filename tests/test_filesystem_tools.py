@@ -30,6 +30,15 @@ def test_read_rejects_ignored_directory(tmp_path: Path) -> None:
     assert "ignored by workspace guard" in result
 
 
+def test_read_file_supports_line_offset_and_limit(tmp_path: Path) -> None:
+    source = tmp_path / "notes.txt"
+    source.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+
+    result = run_read("notes.txt", offset=2, limit=2, workspace=tmp_path)
+
+    assert result == "three\nfour\n... (1 more lines)"
+
+
 def test_glob_skips_ignored_directories(tmp_path: Path) -> None:
     (tmp_path / "agent.py").write_text("print('ok')", encoding="utf-8")
     ignored_file = tmp_path / ".venv" / "lib.py"

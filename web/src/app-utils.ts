@@ -187,5 +187,5 @@ export function buildAttachmentPrompt(text: string, attachments: AttachmentText[
 }
 
 // Re-export the full markdown renderer from the dedicated module
-export { renderMarkdown, addCodeCopyButtons } from "./markdown";
-export { createMarkdownRenderer } from "./markdown";
+export { renderMarkdown, addCodeCopyButtons } from "./markdown.js";
+export { createMarkdownRenderer } from "./markdown.js";

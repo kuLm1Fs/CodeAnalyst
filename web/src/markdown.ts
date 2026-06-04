@@ -6,13 +6,37 @@ marked.setOptions({
   breaks: true,
 });
 
+const allowedFallbackTags = /^(\/)?(h[1-6]|p|br|hr|ul|ol|li|blockquote|pre|code|a|img|strong|em|del|s|table|thead|tbody|tr|th|td|input|span|div)\b/i;
+
+function fallbackSanitize(html: string): string {
+  return html.replace(/<([^>]+)>/g, (match, tagBody: string) => {
+    if (!allowedFallbackTags.test(tagBody.trim())) {
+      return match.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    return match
+      .replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+      .replace(/\s+(href|src)\s*=\s*(['"]?)javascript:[^'"\s>]*/gi, "");
+  });
+}
+
 function sanitize(html: string): string {
-  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  const purifier = DOMPurify as unknown as {
+    addHook?: (hook: string, callback: (node: Element) => void) => void;
+    removeHook?: (hook: string) => void;
+    sanitize?: (html: string, options: Record<string, unknown>) => string;
+  };
+
+  if (!purifier.addHook || !purifier.removeHook || !purifier.sanitize) {
+    return fallbackSanitize(html);
+  }
+
+  purifier.addHook("afterSanitizeAttributes", (node) => {
     if (node.nodeName === "A" && node.hasAttribute("target")) {
       node.setAttribute("rel", "noopener noreferrer");
     }
   });
-  const clean = DOMPurify.sanitize(html, {
+  const clean = purifier.sanitize(html, {
     ALLOWED_TAGS: [
       "h1", "h2", "h3", "h4", "h5", "h6",
       "p", "br", "hr",
@@ -36,7 +60,7 @@ function sanitize(html: string): string {
     SANITIZE_DOM: true,
     KEEP_CONTENT: true,
   });
-  DOMPurify.removeHook("afterSanitizeAttributes");
+  purifier.removeHook("afterSanitizeAttributes");
   return clean;
 }
 

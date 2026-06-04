@@ -7,11 +7,20 @@ from typing import Any
 _DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 
 
+def _debug_enabled() -> bool:
+    return os.getenv("LUMAK_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug(message: str) -> None:
+    if _debug_enabled():
+        print(f"[gateway] {message}", flush=True)
+
+
 def _load_env() -> None:
     if not _DOTENV_PATH.exists():
-        print(f"[gateway] _load_env: {_DOTENV_PATH} NOT FOUND", flush=True)
+        _debug(f"_load_env: {_DOTENV_PATH} NOT FOUND")
         return
-    print(f"[gateway] _load_env: reading {_DOTENV_PATH}", flush=True)
+    _debug(f"_load_env: reading {_DOTENV_PATH}")
     for line in _DOTENV_PATH.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -20,12 +29,11 @@ def _load_env() -> None:
         key = key.strip()
         value = value.strip().strip("\"'")
         if key and value:
-            print(f"[gateway] _load_env: set {key}=...{value[-8:]}", flush=True)
+            _debug(f"_load_env: set {key}")
             os.environ[key] = value
 
 
 _load_env()
-print(f"[gateway] after _load_env: key={repr(os.getenv('DEEPSEEK_API_KEY', 'NOT SET')[-12:])}", flush=True)
 
 from agent.config import AnthropicConfig, DeepSeekConfig, MiniMaxConfig, OpenAIConfig
 from agent.LLM.anthropic_provider import AnthropicProvider
@@ -70,18 +78,10 @@ def build_request_llm_client(message: dict[str, Any]) -> object | None:
     model = str(raw_config.get("model", "")).strip()
     base_url = str(raw_config.get("base_url", "")).strip()
 
-    env_vals = _from_env(provider)
-    if env_vals.get("api_key"):
-        api_key = env_vals["api_key"]
-    if env_vals.get("model"):
-        model = env_vals["model"]
-    if env_vals.get("base_url"):
-        base_url = env_vals["base_url"]
-
     if not provider or not api_key or not model:
         return None
 
-    print(f"[gateway] llm client: provider={provider} model={model} key_suffix=...{api_key[-4:]}")
+    _debug(f"llm client: provider={provider} model={model}")
 
     if provider == "minimax":
         if not base_url:

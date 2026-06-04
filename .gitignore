@@ -34,6 +34,7 @@ build/
 coverage/
 htmlcov/
 doc/
+docs/
 todo/
 
 # Skills

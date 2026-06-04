@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent.memory import MemoryStore
 from agent.runtime.hooks import HookContext
@@ -10,6 +11,7 @@ from gateway.app import (
     build_project_list,
     configure_workspace,
     handle_message,
+    run_chat,
     resolve_workspace_path,
     session_workspaces,
     workspace_for_session,
@@ -155,4 +157,112 @@ def test_handle_message_serves_conversation_history(monkeypatch, tmp_path: Path)
         "type": "conversation.response",
         "session_id": "s1",
         "messages": [{"role": "user", "content": "hello"}],
+    }
+
+
+def test_run_chat_returns_session_end_error_when_agent_returns_messages(monkeypatch, tmp_path: Path) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.messages: list[dict] = []
+
+        async def send(self, raw_message: str) -> None:
+            self.messages.append(json.loads(raw_message))
+
+    class FakeAgent:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        async def async_run(self, messages: list[dict]) -> list[dict]:
+            for hook in self.config.hooks:
+                hook(
+                    HookContext(
+                        event="session.end",
+                        payload={
+                            "final_output": "模型调用失败：upstream 401",
+                            "stop_reason": "error",
+                        },
+                        session_id=self.config.session_id,
+                        workspace=str(self.config.workspace),
+                    )
+                )
+            return messages
+
+    configure_workspace(str(tmp_path))
+    monkeypatch.setattr("gateway.app.Agent", FakeAgent)
+
+    websocket = FakeWebSocket()
+
+    asyncio.run(run_chat(websocket, {"type": "chat", "session_id": "s1", "message": "hello"}))
+
+    responses = [message for message in websocket.messages if message["type"] == "chat.response"]
+    assert responses[-1]["answer"] == "模型调用失败：upstream 401"
+
+
+def test_handle_message_runs_chat_against_switched_workspace(monkeypatch, tmp_path: Path) -> None:
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.messages: list[dict] = []
+
+        async def send(self, raw_message: str) -> None:
+            self.messages.append(json.loads(raw_message))
+
+    captured = {}
+
+    class FakeAgent:
+        def __init__(self, config) -> None:
+            captured["workspace"] = config.workspace
+            captured["max_tokens"] = config.max_tokens
+            captured["max_steps"] = config.max_steps
+
+        async def async_run(self, messages: list[dict]) -> object:
+            return SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="switched workspace ok")],
+            )
+
+    default_workspace = tmp_path / "default"
+    switched_workspace = tmp_path / "switched"
+    default_workspace.mkdir()
+    switched_workspace.mkdir()
+    configure_workspace(str(default_workspace))
+    monkeypatch.setattr("gateway.app.Agent", FakeAgent)
+    websocket = FakeWebSocket()
+
+    async def scenario() -> None:
+        await handle_message(
+            websocket,
+            {
+                "type": "project.switch",
+                "session_id": "s1",
+                "path": str(switched_workspace),
+            },
+        )
+        await handle_message(
+            websocket,
+            {
+                "type": "chat",
+                "session_id": "s1",
+                "message": "hello",
+                "max_tokens": 2048,
+                "max_steps": 7,
+            },
+        )
+
+    asyncio.run(scenario())
+
+    assert captured == {
+        "workspace": switched_workspace.resolve(),
+        "max_tokens": 2048,
+        "max_steps": 7,
+    }
+    assert websocket.messages[0] == {
+        "type": "project.switched",
+        "session_id": "s1",
+        "name": "switched",
+        "path": str(switched_workspace.resolve()),
+    }
+    assert websocket.messages[-1] == {
+        "type": "chat.response",
+        "session_id": "s1",
+        "answer": "switched workspace ok",
     }
