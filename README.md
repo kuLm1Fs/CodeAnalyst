@@ -3,63 +3,103 @@
 </p>
 
 <p align="center">
-  <strong>Portfolio README</strong> · <a href="README.zh.md">中文旧版</a>
+  <strong>English</strong> · <a href="README.zh.md">中文</a>
 </p>
 
 # LumaK
 
-**Local-first Coding Agent Runtime for codebase understanding and safe small edits.**
+LumaK is a local-first coding agent runtime for understanding and safely editing codebases. It runs an LLM-driven tool loop inside a restricted workspace, exposes the same runtime through CLI, terminal TUI, and Web UI entry points, and records trace events so agent runs can be inspected and debugged.
 
-LumaK is a local coding agent runtime, not a thin chat API wrapper. It runs an LLM-driven tool loop inside a restricted workspace, exposes the same runtime through CLI / TypeScript TUI / Web UI, and records the execution as trace events so a failed agent run can be debugged after the fact.
+The project is designed around a small, auditable core: workspace-scoped tools, explicit tool schemas, session memory, trace hooks, provider adapters, and a WebSocket gateway that lets different UIs share the same runtime behavior.
 
-**What to look at in 30 seconds**
+## Features
 
-- Runtime loop: `agent/runtime/loop.py`
-- Agent wrapper: `agent/runtime/agent/agent.py`
-- Tool registry and workspace guard: `agent/tools/registry.py`, `agent/tools/filesystems.py`
-- Trace hooks and live events: `agent/trace/trace.py`, `gateway/events.py`
-- WebSocket gateway APIs: `gateway/app.py`, `gateway/state.py`
-- Web / TUI entry points: `web/src/app.ts`, `tui/src/gateway-runtime.ts`
-- Skills and eval notes: `agent/skills/`, `.skills/`, `evals/`
+- **Local-first runtime**: run against a local workspace with path escape protection and ignored-directory filtering.
+- **Tool-calling agent loop**: supports multi-step model requests, tool results, context truncation, deduplication, termination signals, and `max_steps` limits.
+- **Safe filesystem tools**: read, write, search, glob, and exact-match `safe_edit` with unified diff output.
+- **Code navigation tools**: Python file outlines, workspace code maps, and exact symbol lookup.
+- **Session memory**: JSONL-backed conversation history per session.
+- **Trace events**: records model requests, tool calls, timing, success/failure, and final session output.
+- **Multiple providers**: MiniMax, Anthropic, OpenAI, DeepSeek, and custom OpenAI-compatible endpoints.
+- **Multiple interfaces**: Python CLI, TypeScript terminal TUI, and Web UI via a shared WebSocket gateway.
+- **Local skills**: load `.skills/` instructions and inject matching skills into the system prompt.
 
-## Why This Is Not Just an API Wrapper
+## Installation
 
-普通 LLM API 套壳通常只有「输入 prompt -> 返回文本」。LumaK 的重点是 Agent 工程里更难验证的部分：
-
-- **Runtime control**: multi-step loop, tool-use parsing, tool-result feedback, `max_steps`, dedup, context truncation, and fallback messages.
-- **Tool execution**: model-chosen tools for file reading, search, structured code outline, safe edit preview, and workspace-scoped writes.
-- **Safety boundary**: path escape prevention, ignored directory filtering, UTF-8 checks, exact-match edit, and rollback hooks.
-- **Observability**: JSONL trace for model requests, tool arguments, latency, success/failure, and final output.
-- **Multi-entry UI**: CLI for fast use, TUI for terminal demo, Web UI for visualizing live events, memory, project state, and trace.
-- **Extensibility**: local `.skills/` prompt injection and manual eval tasks for behavior regression.
-
-## Quick Start
+LumaK uses Python 3.12+ and `uv`.
 
 ```shell
 uv sync
 cp .env.example .env
-# edit .env with one provider key, for example ANTHROPIC_API_KEY or OPENAI_API_KEY
+```
 
-# CLI, default workspace is current directory
+Edit `.env` and configure one provider key, for example:
+
+```env
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-your-key
+ANTHROPIC_MODEL_ID=claude-sonnet-4-5
+```
+
+For global CLI usage:
+
+```shell
+uv tool install --editable .
+lumak --help
+```
+
+## Usage
+
+Run a single prompt against the current directory:
+
+```shell
 uv run lumak "Where is the runtime loop?"
+```
 
-# interactive CLI
+Start the interactive CLI:
+
+```shell
 uv run lumak
+```
 
-# Web UI + gateway, then open http://127.0.0.1:4173
+Start the Web UI and gateway:
+
+```shell
 cd web && npm install && npm run build
 cd ..
 uv run lumak web --workspace /path/to/your/repo
+```
 
-# TypeScript terminal TUI
+Then open `http://127.0.0.1:4173`.
+
+Start the terminal TUI:
+
+```shell
 cd tui && npm install && npm run build
 cd ..
 uv run lumak tui --workspace /path/to/your/repo
 ```
 
-Provider config lives in `.env.example`. Supported provider families include MiniMax, Anthropic, OpenAI, DeepSeek, and OpenAI-compatible endpoints.
+Run only the WebSocket gateway:
 
-## Core Architecture
+```shell
+uv run lumak gateway --workspace /path/to/your/repo
+```
+
+## Configuration
+
+Provider configuration lives in `.env.example`. Set `LLM_PROVIDER` to one of:
+
+- `minimax`
+- `anthropic`
+- `openai`
+- `deepseek`
+
+Custom OpenAI-compatible endpoints can be configured through the matching provider variables and base URL settings.
+
+The Web UI can also send per-request provider configuration through the gateway payload.
+
+## Architecture
 
 ```text
 CLI / TUI / Web UI
@@ -69,7 +109,7 @@ WebSocket Gateway
   chat / project.switch / conversation.* / memory.get / trace.get
         |
         v
-Agent(Runtime)
+Agent Runtime
   session history -> skill selection -> model request -> tool_use
         |
         v
@@ -81,106 +121,94 @@ Tool Registry
 Workspace Guard + Trace + Memory + Hooks
 ```
 
-### Runtime Loop
+Core modules:
 
-`agent/runtime/loop.py` implements the agent loop:
+- `agent/runtime/loop.py`: asynchronous and synchronous agent loop.
+- `agent/runtime/messages.py`: message serialization, context truncation, and step budget warnings.
+- `agent/tools/registry.py`: tool schemas, handlers, timeout policy, retries, and metadata.
+- `agent/tools/filesystems.py`: workspace-scoped filesystem tools.
+- `gateway/app.py`: WebSocket protocol server and message dispatch.
+- `gateway/chat.py`: gateway chat runner and response fallback behavior.
+- `gateway/state.py`: workspace, memory, trace, and project state.
+- `web/`: browser UI built with TypeScript and Vite.
+- `tui/`: terminal UI built with TypeScript.
+- `shared/`: shared gateway contract helpers and types.
 
-1. load session history from `MemoryStore`
-2. select matching local skills from `.skills/`
-3. send messages and tool schemas to the configured model provider
-4. parse `tool_use` blocks
-5. execute tools inside the workspace guard
-6. append `tool_result` blocks for the next model turn
-7. emit hook events and persist trace
-8. stop on final answer, termination, repeated dedup, or `max_steps`
+## Built-in Tools
 
-### Gateway And UI
+| Tool | Description |
+| --- | --- |
+| `glob` | Find files matching a glob pattern inside the workspace. |
+| `read_file` | Read UTF-8 text files with optional line paging. |
+| `search_text` | Search text with ripgrep and return file, line number, and matching content. |
+| `write_file` | Write UTF-8 text files inside the workspace. |
+| `safe_edit` | Replace exact text once and return a unified diff; supports preview mode. |
+| `file_outline` | Return imports, classes, functions, and methods for a Python file. |
+| `code_map` | Build a workspace-level map of Python definitions. |
+| `symbol_lookup` | Find Python class, function, or method definitions by exact name. |
+| `delegate` | Run a restricted sub-agent for exploratory, review, or editing tasks. |
 
-`gateway/app.py` turns the runtime into a WebSocket protocol. The Web UI and TUI do not own the agent logic; they subscribe to events and render state.
+## Gateway Protocol
 
-Supported message families include:
+The Web UI and TUI communicate with the runtime through the gateway. Supported message families include:
 
 | Message | Purpose |
 | --- | --- |
-| `chat` | Run an agent turn |
-| `project.list` / `project.get` / `project.switch` | Inspect or switch workspace |
-| `conversation.list` / `conversation.get` | Read session history |
-| `memory.get` | Inspect memory for one session |
-| `trace.get` | Read JSONL trace events |
-| `ping` | Health check |
+| `chat` | Run an agent turn. |
+| `project.list` / `project.get` | Inspect the active workspace. |
+| `project.switch` | Switch the workspace for a session. |
+| `conversation.list` / `conversation.get` | Read persisted session history. |
+| `memory.get` | Inspect memory for a session. |
+| `trace.get` | Read JSONL trace events for a session. |
+| `ping` | Health check. |
 
-### Tools
+## Local Skills
 
-| Tool | What it proves |
-| --- | --- |
-| `glob` | File discovery under workspace constraints |
-| `read_file` | Bounded UTF-8 file reading |
-| `search_text` | Keyword search with path and line numbers |
-| `write_file` | Workspace-scoped file writing |
-| `safe_edit` | Exact-match replacement with unified diff preview |
-| `file_outline` | Structured Python file outline from definitions/imports |
-| `code_map` | Workspace-level Python definition map |
-| `symbol_lookup` | Exact symbol lookup by class/function/method name |
-| `delegate` | Sub-agent task delegation with restricted tool sets |
+LumaK can load local skills from `.skills/`. A skill directory contains metadata and prompt instructions:
 
-## Interviewer Reading Path
+```text
+.skills/<skill-name>/
+├─ _meta.json
+└─ SKILL.md
+```
 
-If you only have 10 minutes, read in this order:
+When a user message matches a skill name or trigger, the skill instructions are added to the system prompt for that run.
 
-1. `lumak/cli.py`: confirms the real commands: `lumak`, `lumak gateway`, `lumak web`, `lumak tui`.
-2. `agent/runtime/loop.py`: confirms the multi-step agent loop and trace hook points.
-3. `agent/tools/filesystems.py`: confirms workspace guard, ignored directories, and `safe_edit`.
-4. `gateway/app.py` + `gateway/state.py`: confirms WebSocket API, project switching, history, memory, and trace endpoints.
-5. `tui/src/gateway-runtime.ts` + `web/src/app.ts`: confirms TUI/Web consume the same gateway instead of duplicating runtime logic.
-6. `evals/session-history-pollution.md`: shows a real debugging case and the fixes made from trace evidence.
+## Development
 
-## Demo Flow
+Run the Python test suite:
 
-Recommended short demo for interviews:
+```shell
+uv run pytest
+```
 
-1. Start Web UI:
+Run Web UI tests:
 
-   ```shell
-   uv run lumak web --workspace /Users/poikoi/code/lumaK
-   ```
+```shell
+cd web
+npm test
+```
 
-2. Ask: `agent runtime 的主循环在哪里？`
-   Expected: LumaK identifies `agent/runtime/loop.py` and explains the tool loop.
+Run TUI tests:
 
-3. Ask: `文件工具有哪些安全边界？`
-   Expected: mentions workspace restriction, ignored directories, UTF-8 text, path escape rejection, and safe edit behavior.
+```shell
+cd tui
+npm test
+```
 
-4. Ask for a safe edit preview on a temporary file:
-   Expected: `safe_edit(..., preview=true)` returns a diff without writing.
+Manual eval notes live in `evals/`.
 
-5. Open the details panel in Web UI or call `trace.get`:
-   Expected: see `model.request`, `tool.before`, `tool.after`, and `session.end` events.
+## Contributing
 
-6. Run the TUI against the same workspace:
+Issues and pull requests are welcome. For changes that affect runtime behavior, please include focused tests around the tool loop, gateway protocol, filesystem guard, or UI contract that changed.
 
-   ```shell
-   uv run lumak tui --workspace /Users/poikoi/code/lumaK
-   ```
-
-   Expected: terminal UI shows the same runtime events through the gateway path.
-
-## Tests And Evals
+Before opening a pull request, run the relevant checks:
 
 ```shell
 uv run pytest
 cd web && npm test
 cd ../tui && npm test
 ```
-
-Manual eval tasks live in `evals/tasks.md`. Debugging writeups live in `evals/`, especially `session-history-pollution.md`, which records how trace evidence was used to fix memory pollution, `glob("**/*")` hangs, and empty response fallback.
-
-## Current Scope
-
-This project is intentionally scoped as an interview portfolio for Agent engineering:
-
-- proves runtime control, tool calling, workspace safety, traceability, and UI/runtime separation
-- does not try to become a full production IDE agent
-- prioritizes demo reliability and source-code evidence over broad feature count
 
 ## License
 

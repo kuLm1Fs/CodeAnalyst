@@ -8,98 +8,32 @@
 
 # LumaK
 
-**本地优先的代码库理解与安全修改 Agent 运行时。** LumaK 在受限 workspace 内通过 LLM tool-calling 读取、搜索、分析和修改代码。这是一个工程工具，而非通用聊天机器人——核心目标是让 agent 闭环足够健壮：工具选择、路径约束、错误处理、trace、会话记忆、技能注入，以及可用的 CLI / TUI / Web UI 入口。
+LumaK 是一个本地优先的代码 Agent 运行时，用于理解代码库并在受控范围内安全修改文件。它在受限 workspace 内运行 LLM tool-calling 循环，通过 CLI、终端 TUI 和 Web UI 暴露同一套运行时能力，并记录 trace 事件，方便检查和调试 agent 执行过程。
 
-## 快速开始
-
-```shell
-uv sync
-cp .env.example .env   # 配置 LLM provider 和 API key
-
-# 交互式对话
-uv run lumak
-
-# 单次提问
-uv run lumak "项目入口在哪？"
-
-# Web UI (http://127.0.0.1:4173)
-uv run lumak web
-
-# 终端 TUI
-uv run lumak tui
-```
+这个项目围绕一个小而可审计的核心构建：workspace 范围内的工具、显式工具 schema、会话记忆、trace hook、provider 适配器，以及让不同 UI 共享同一运行时行为的 WebSocket gateway。
 
 ## 功能特性
 
-- **多 LLM provider 支持** — MiniMax、Anthropic、OpenAI、DeepSeek，以及自定义 OpenAI-compatible 端点
-- **8 个内置工具** — `read_file`、`write_file`、`glob`、`search_text`、`safe_edit`、`file_outline`、`code_map`、`symbol_lookup`
-- **Python AST 分析** — 文件结构预览、workspace 代码地图、符号查找，无外部依赖
-- **安全编辑** — `safe_edit` 要求 `old_text` 精确匹配，返回 unified diff，失败时自动回滚
-- **Workspace 安全** — 路径逃逸防护、忽略目录过滤（`.git`、`.venv`、`node_modules` 等）、UTF-8 强制校验
-- **会话记忆** — JSONL 持久化，按 session 自动加载
-- **Trace / 审计日志** — 完整事件链路写入 `.trace/`（JSONL）
-- **本地技能系统** — `.skills/` 目录，基于触发词匹配与 system prompt 注入
-- **Hook / 事件系统** — 可扩展的回调机制，支持 trace、实时事件、回滚和自定义行为
-- **三种 UI 模式** — Python CLI、TypeScript 终端 TUI、Web UI（统一通过 WebSocket gateway 连接）
-- **工具去重与上下文管理** — 避免重复执行，优雅处理 token 超限
+- **本地优先运行时**：针对本地 workspace 运行，包含路径逃逸防护和忽略目录过滤。
+- **Tool-calling agent 循环**：支持多轮模型请求、工具结果回填、上下文截断、工具去重、终止信号和 `max_steps` 限制。
+- **安全文件系统工具**：读取、写入、搜索、glob，以及带 unified diff 的精确匹配 `safe_edit`。
+- **代码导航工具**：Python 文件 outline、workspace 代码地图、精确符号查找。
+- **会话记忆**：基于 JSONL 的 session 历史记录。
+- **Trace 事件**：记录模型请求、工具调用、耗时、成功/失败和最终输出。
+- **多 provider 支持**：MiniMax、Anthropic、OpenAI、DeepSeek，以及自定义 OpenAI-compatible 端点。
+- **多入口界面**：Python CLI、TypeScript 终端 TUI、通过 WebSocket gateway 连接的 Web UI。
+- **本地技能系统**：加载 `.skills/` 指令，并将匹配到的技能注入 system prompt。
 
-## 架构
+## 安装
 
-```
-user message
-  -> 加载会话记忆
-  -> 选择本地技能
-  -> 模型请求（含工具定义）
-  -> 工具调用（workspace 边界内执行）
-  -> 工具结果返回模型
-  -> 最终回答
-  -> 持久化会话记忆
-  -> 写入 trace 和实时事件
+LumaK 需要 Python 3.12+ 和 `uv`。
+
+```shell
+uv sync
+cp .env.example .env
 ```
 
-### 项目结构
-
-```
-.
-├─ agent/               # 核心 Python 运行时
-│  ├─ CLI/              # Python CLI 入口
-│  ├─ LLM/              # Provider 配置与客户端适配
-│  ├─ analysis/         # Python AST 分析（outline、index、symbol）
-│  ├─ memory/           # 会话记忆（JSONL）
-│  ├─ runtime/          # Agent 封装、hook、tool loop、session rollback
-│  ├─ skills/           # 本地技能加载、选择、prompt 渲染
-│  ├─ tools/            # 工具 schema、注册、文件系统与分析工具
-│  ├─ trace/            # Trace 事件写入
-│  └─ config.py         # 环境变量配置
-├─ gateway/             # WebSocket gateway，连接 Web UI 与 runtime
-├─ web/                 # 静态 Web UI（vanilla TS + Vite）
-├─ tui/                 # 终端 TUI（TypeScript）
-├─ shared/              # 共享 TypeScript gateway 合约类型
-├─ tests/               # Python 测试套件（pytest）
-├─ docs/                # 项目方向、架构、路线图
-├─ evals/               # 评测任务草案
-├─ .skills/             # 示例本地技能
-├─ .env.example
-├─ pyproject.toml
-└─ README.md
-```
-
-## 工具列表
-
-| 工具 | 说明 |
-| --- | --- |
-| `glob` | 按 glob pattern 查找 workspace 内文件 |
-| `read_file` | 读取 UTF-8 文本文件，可限制行数 |
-| `search_text` | 搜索关键词，返回路径、行号与匹配行 |
-| `write_file` | 写入 UTF-8 文本文件 |
-| `safe_edit` | 精确文本替换，返回 unified diff |
-| `file_outline` | Python AST 结构预览——import、class、function、method 及行号 |
-| `code_map` | 扫描 workspace Python 文件，生成结构化代码地图 |
-| `symbol_lookup` | 按精确定义名称查找 Python class、function 或 method |
-
-## 配置
-
-设置 `LLM_PROVIDER` 为 `minimax`、`anthropic`、`openai` 或 `deepseek`。
+编辑 `.env`，配置一个 provider key，例如：
 
 ```env
 LLM_PROVIDER=anthropic
@@ -107,52 +41,173 @@ ANTHROPIC_API_KEY=sk-ant-your-key
 ANTHROPIC_MODEL_ID=claude-sonnet-4-5
 ```
 
-参见 `.env.example` 获取所有 provider 选项。
-
-## Web UI 与 Gateway
-
-```shell
-uv run lumak web                          # 启动 Web 服务 + gateway
-uv run lumak gateway --workspace /path   # 仅启动 gateway
-```
-
-Web UI 通过 WebSocket 连接 agent runtime，支持聊天、项目信息、历史会话、trace 查询和实时 agent 事件。
-
-Gateway 消息类型：
-
-| 类型 | 作用 |
-| --- | --- |
-| `chat` | 发送用户消息，触发 agent runtime |
-| `project.list` / `project.get` | 查询 workspace 项目信息 |
-| `project.switch` | 切换 session 的 workspace |
-| `conversation.list` / `conversation.get` | 查询会话历史 |
-| `memory.get` | 查询会话记忆 |
-| `trace.get` | 查询 session trace 事件 |
-| `ping` | 健康检查 |
-
-## 技能系统
-
-LumaK 从 `.skills/` 加载本地技能。每个技能目录包含：
-
-```
-.skills/<skill-name>/
-├─ _meta.json      # 名称、版本、描述、触发词
-└─ SKILL.md        # 注入到 system prompt 的技能指令
-```
-
-## 测试
-
-```shell
-uv run pytest                 # Python 测试
-cd web && npm test            # Web UI 测试
-cd tui && npm test            # TUI 测试
-```
-
-## 安装为全局命令
+安装为全局 CLI：
 
 ```shell
 uv tool install --editable .
-lumak cli      # 或: lumak web | lumak tui | lumak gateway
+lumak --help
+```
+
+## 使用
+
+针对当前目录运行一次提问：
+
+```shell
+uv run lumak "runtime loop 在哪里？"
+```
+
+启动交互式 CLI：
+
+```shell
+uv run lumak
+```
+
+启动 Web UI 和 gateway：
+
+```shell
+cd web && npm install && npm run build
+cd ..
+uv run lumak web --workspace /path/to/your/repo
+```
+
+然后打开 `http://127.0.0.1:4173`。
+
+启动终端 TUI：
+
+```shell
+cd tui && npm install && npm run build
+cd ..
+uv run lumak tui --workspace /path/to/your/repo
+```
+
+只启动 WebSocket gateway：
+
+```shell
+uv run lumak gateway --workspace /path/to/your/repo
+```
+
+## 配置
+
+Provider 配置参考 `.env.example`。`LLM_PROVIDER` 可设置为：
+
+- `minimax`
+- `anthropic`
+- `openai`
+- `deepseek`
+
+自定义 OpenAI-compatible 端点可通过对应 provider 变量和 base URL 配置。
+
+Web UI 也可以通过 gateway payload 发送单次请求的 provider 配置。
+
+## 架构
+
+```text
+CLI / TUI / Web UI
+        |
+        v
+WebSocket Gateway
+  chat / project.switch / conversation.* / memory.get / trace.get
+        |
+        v
+Agent Runtime
+  session history -> skill selection -> model request -> tool_use
+        |
+        v
+Tool Registry
+  read_file / write_file / glob / search_text / safe_edit
+  file_outline / code_map / symbol_lookup / delegate
+        |
+        v
+Workspace Guard + Trace + Memory + Hooks
+```
+
+核心模块：
+
+- `agent/runtime/loop.py`：同步和异步 agent 循环。
+- `agent/runtime/messages.py`：消息序列化、上下文截断和 step budget 提示。
+- `agent/tools/registry.py`：工具 schema、handler、超时策略、重试和元数据。
+- `agent/tools/filesystems.py`：workspace 范围内的文件系统工具。
+- `gateway/app.py`：WebSocket 协议服务和消息分发。
+- `gateway/chat.py`：gateway chat runner 和响应兜底逻辑。
+- `gateway/state.py`：workspace、memory、trace 和 project 状态。
+- `web/`：基于 TypeScript 和 Vite 的浏览器 UI。
+- `tui/`：基于 TypeScript 的终端 UI。
+- `shared/`：共享 gateway contract helper 和类型。
+
+## 内置工具
+
+| 工具 | 说明 |
+| --- | --- |
+| `glob` | 按 glob pattern 查找 workspace 内文件。 |
+| `read_file` | 分页读取 UTF-8 文本文件。 |
+| `search_text` | 使用 ripgrep 搜索文本，返回文件、行号和匹配内容。 |
+| `write_file` | 在 workspace 内写入 UTF-8 文本文件。 |
+| `safe_edit` | 精确替换一次文本并返回 unified diff；支持 preview 模式。 |
+| `file_outline` | 返回 Python 文件的 import、class、function 和 method。 |
+| `code_map` | 构建 workspace 级 Python 定义地图。 |
+| `symbol_lookup` | 按精确名称查找 Python class、function 或 method 定义。 |
+| `delegate` | 运行受限子 agent，用于探索、审查或编辑任务。 |
+
+## Gateway 协议
+
+Web UI 和 TUI 通过 gateway 与 runtime 通信。支持的消息类型包括：
+
+| 消息 | 用途 |
+| --- | --- |
+| `chat` | 运行一次 agent turn。 |
+| `project.list` / `project.get` | 查看当前 workspace。 |
+| `project.switch` | 切换某个 session 的 workspace。 |
+| `conversation.list` / `conversation.get` | 读取持久化 session 历史。 |
+| `memory.get` | 查看某个 session 的记忆。 |
+| `trace.get` | 读取某个 session 的 JSONL trace 事件。 |
+| `ping` | 健康检查。 |
+
+## 本地技能
+
+LumaK 可以从 `.skills/` 加载本地技能。一个技能目录包含元数据和 prompt 指令：
+
+```text
+.skills/<skill-name>/
+├─ _meta.json
+└─ SKILL.md
+```
+
+当用户消息匹配技能名称或触发词时，该技能指令会被加入本次运行的 system prompt。
+
+## 开发
+
+运行 Python 测试：
+
+```shell
+uv run pytest
+```
+
+运行 Web UI 测试：
+
+```shell
+cd web
+npm test
+```
+
+运行 TUI 测试：
+
+```shell
+cd tui
+npm test
+```
+
+手动评测记录在 `evals/` 中。
+
+## 贡献
+
+欢迎提交 issue 和 pull request。涉及 runtime 行为的修改，请为变更的 tool loop、gateway 协议、filesystem guard 或 UI contract 添加聚焦测试。
+
+提交 pull request 前，建议运行相关检查：
+
+```shell
+uv run pytest
+cd web && npm test
+cd ../tui && npm test
 ```
 
 ## 许可证
